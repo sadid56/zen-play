@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:zenplay/core/data/video_repository.dart';
 import 'package:zenplay/core/models/video_item.dart';
@@ -32,6 +33,8 @@ class ZenPlayController extends ChangeNotifier {
   bool _isLoadingMoreFeed = false;
   bool _isLoadingSearch = false;
   bool _isLoadingWatchDetails = false;
+  bool _isLoadingMoreComments = false;
+  String? _commentsNextToken;
 
   VideoItem? _activeVideo;
   List<String> _availableQualities = const ['Auto'];
@@ -52,6 +55,8 @@ class ZenPlayController extends ChangeNotifier {
   final Set<String> _likedVideoIds = {};
   final Set<String> _dislikedVideoIds = {};
   final Map<String, String> _downloadedQualities = {};
+  final Map<String, String> _downloadedFilePaths = {};
+  final Map<String, double> _downloadProgress = {};
   final List<String> _watchHistoryIds = [];
   final Map<String, Set<String>> _savedFolders = {
     'Watch Later': {},
@@ -68,6 +73,8 @@ class ZenPlayController extends ChangeNotifier {
   bool get isLoadingMoreFeed => _isLoadingMoreFeed;
   bool get isLoadingSearch => _isLoadingSearch;
   bool get isLoadingWatchDetails => _isLoadingWatchDetails;
+  bool get isLoadingMoreComments => _isLoadingMoreComments;
+  bool get hasMoreComments => _commentsNextToken != null;
   VideoItem? get activeVideo => _activeVideo;
   List<String> get availableQualities => List.unmodifiable(_availableQualities);
   List<SponsorSegment> get activeSponsorSegments => _activeSponsorSegments;
@@ -161,7 +168,10 @@ class ZenPlayController extends ChangeNotifier {
   bool isLiked(String videoId) => _likedVideoIds.contains(videoId);
   bool isDisliked(String videoId) => _dislikedVideoIds.contains(videoId);
   bool isDownloaded(String videoId) => _downloadedQualities.containsKey(videoId);
+  bool isDownloading(String videoId) => _downloadProgress.containsKey(videoId);
+  double? downloadProgressFor(String videoId) => _downloadProgress[videoId];
   String? downloadedQualityFor(String videoId) => _downloadedQualities[videoId];
+  String? downloadedFilePathFor(String videoId) => _downloadedFilePaths[videoId];
 
   Future<void> _initializeApp() async {
     _isAppInitializing = true;
@@ -297,6 +307,8 @@ class ZenPlayController extends ChangeNotifier {
     _activeVideo = video;
     _availableQualities = const ['Auto'];
     _activeSponsorSegments = const [];
+    _commentsNextToken = null;
+    _isLoadingMoreComments = false;
     _seedLiveChat(video);
     _isPlaying = true;
     _playbackProgress = 0.0;
@@ -323,6 +335,7 @@ class ZenPlayController extends ChangeNotifier {
       if (_activeVideo?.id != video.id) return;
       _availableQualities = details.availableQualities;
       _activeSponsorSegments = details.sponsorSegments;
+      _commentsNextToken = details.commentsNextToken;
       if (details.liveChatMessages.isNotEmpty) {
         _liveChatMessages
           ..clear()
@@ -346,6 +359,30 @@ class ZenPlayController extends ChangeNotifier {
     }
   }
 
+  Future<void> loadMoreComments() async {
+    final token = _commentsNextToken;
+    final video = _activeVideo;
+    if (token == null || video == null || _isLoadingMoreComments) return;
+
+    _isLoadingMoreComments = true;
+    notifyListeners();
+
+    try {
+      final page = await _youtube.fetchMoreComments(token);
+      if (_activeVideo?.id != video.id) return;
+      _commentsNextToken = page.nextToken;
+      if (page.comments.isNotEmpty) {
+        _activeVideo = _activeVideo!.copyWith(
+          comments: [..._activeVideo!.comments, ...page.comments],
+        );
+      }
+    } catch (_) {
+    } finally {
+      _isLoadingMoreComments = false;
+      notifyListeners();
+    }
+  }
+
   void clearHistory() {
     _watchHistoryIds.clear();
     notifyListeners();
@@ -357,7 +394,15 @@ class ZenPlayController extends ChangeNotifier {
   }
 
   void clearDownloads() {
+    for (final path in _downloadedFilePaths.values) {
+      try {
+        final file = File(path);
+        if (file.existsSync()) file.deleteSync();
+      } catch (_) {}
+    }
     _downloadedQualities.clear();
+    _downloadedFilePaths.clear();
+    _downloadProgress.clear();
     notifyListeners();
   }
 
@@ -460,23 +505,59 @@ class ZenPlayController extends ChangeNotifier {
     notifyListeners();
   }
 
-  void saveDownload(String videoId, String quality) {
-    _downloadedQualities[videoId] = quality;
+  Future<void> startDownload(VideoItem video, String quality) async {
+    _downloadedQualities[video.id] = quality;
+    _downloadProgress[video.id] = 0.0;
     notifyListeners();
+
+    if (!enableRemoteFetch) {
+      _downloadProgress.remove(video.id);
+      notifyListeners();
+      return;
+    }
+
+    try {
+      final path = await _youtube.downloadVideoStream(
+        video.id,
+        quality,
+        (progress) {
+          _downloadProgress[video.id] = progress;
+          notifyListeners();
+        },
+      );
+      if (path != null) {
+        _downloadedFilePaths[video.id] = path;
+      }
+    } catch (_) {
+      _downloadedQualities.remove(video.id);
+    } finally {
+      _downloadProgress.remove(video.id);
+      notifyListeners();
+    }
   }
 
   void removeDownload(String videoId) {
+    final path = _downloadedFilePaths.remove(videoId);
+    if (path != null) {
+      try {
+        final file = File(path);
+        if (file.existsSync()) file.deleteSync();
+      } catch (_) {}
+    }
     _downloadedQualities.remove(videoId);
+    _downloadProgress.remove(videoId);
     notifyListeners();
   }
 
   void toggleDownload(String videoId) {
     if (_downloadedQualities.containsKey(videoId)) {
-      _downloadedQualities.remove(videoId);
+      removeDownload(videoId);
     } else {
-      _downloadedQualities[videoId] = _selectedQuality;
+      final video = _allKnownVideos.where((v) => v.id == videoId).firstOrNull;
+      if (video != null) {
+        startDownload(video, _selectedQuality);
+      }
     }
-    notifyListeners();
   }
 
   void addSearchQuery(String query) {

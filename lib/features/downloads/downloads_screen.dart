@@ -38,18 +38,32 @@ class DownloadsScreen extends StatelessWidget {
           itemBuilder: (_, index) {
             final video = downloads[index];
             final quality = controller.downloadedQualityFor(video.id);
+            final progress = controller.downloadProgressFor(video.id);
+            final isDownloading = progress != null;
+
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 if (quality != null)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-                    child: Text(
-                      'Saved offline • $quality',
-                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                            color: Theme.of(context).colorScheme.primary,
-                            fontWeight: FontWeight.w600,
-                          ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          isDownloading
+                              ? 'Downloading ($quality) • ${(progress * 100).round()}%'
+                              : 'Downloaded locally • $quality',
+                          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                                color: Theme.of(context).colorScheme.primary,
+                                fontWeight: FontWeight.w600,
+                              ),
+                        ),
+                        if (isDownloading) ...[
+                          const SizedBox(height: 4),
+                          LinearProgressIndicator(value: progress),
+                        ],
+                      ],
                     ),
                   ),
                 VideoCard(

@@ -106,11 +106,9 @@ class _ZenPlayShellState extends State<ZenPlayShell> {
     return ListenableBuilder(
       listenable: widget.controller,
       builder: (context, _) {
-        if (widget.controller.isAppInitializing) {
-          return const _AppOpeningSplash();
-        }
-
         final activeVideo = widget.controller.activeVideo;
+        final isInitialLoading =
+            widget.controller.isAppInitializing || widget.controller.isLoadingFeed;
 
         return Scaffold(
           appBar: AppBar(
@@ -133,6 +131,12 @@ class _ZenPlayShellState extends State<ZenPlayShell> {
                 tooltip: 'Settings',
               ),
             ],
+            bottom: isInitialLoading
+                ? const PreferredSize(
+                    preferredSize: Size.fromHeight(3),
+                    child: LinearProgressIndicator(minHeight: 3),
+                  )
+                : null,
           ),
           body: PageView(
             controller: _pageController,
@@ -202,38 +206,6 @@ class _ZenPlayShellState extends State<ZenPlayShell> {
           ),
         );
       },
-    );
-  }
-}
-
-class _AppOpeningSplash extends StatelessWidget {
-  const _AppOpeningSplash();
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Scaffold(
-      body: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const ZenPlayLogo(size: 72),
-            const SizedBox(height: 16),
-            Text(
-              'ZenPlay',
-              style: theme.textTheme.headlineSmall?.copyWith(
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            const SizedBox(height: 24),
-            const SizedBox(
-              width: 28,
-              height: 28,
-              child: CircularProgressIndicator(strokeWidth: 2.8),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }

@@ -27,10 +27,9 @@ class WatchScreen extends StatefulWidget {
 class _WatchScreenState extends State<WatchScreen> {
   static const MethodChannel _pipChannel = MethodChannel('com.zenplay.app/pip');
 
+  final GlobalKey _playerKey = GlobalKey();
   bool _descriptionExpanded = false;
   bool _isInPipMode = false;
-  bool _showOverlay = true;
-  Timer? _overlayTimer;
   YoutubePlayerController? _ytController;
   StreamSubscription<YoutubeVideoState>? _videoStateSub;
   String? _loadedVideoId;
@@ -42,32 +41,16 @@ class _WatchScreenState extends State<WatchScreen> {
     _pipChannel.setMethodCallHandler(_handlePipCall);
     widget.controller.addListener(_syncPlayerWithState);
     _syncPlayerWithState();
-    _scheduleOverlayHide();
   }
 
   @override
   void dispose() {
-    _overlayTimer?.cancel();
     _setNativePipEnabled(false);
     _pipChannel.setMethodCallHandler(null);
     widget.controller.removeListener(_syncPlayerWithState);
     _videoStateSub?.cancel();
     _ytController?.close();
     super.dispose();
-  }
-
-  void _scheduleOverlayHide() {
-    _overlayTimer?.cancel();
-    _overlayTimer = Timer(const Duration(seconds: 3), () {
-      if (mounted && _showOverlay) {
-        setState(() => _showOverlay = false);
-      }
-    });
-  }
-
-  void _toggleOverlay() {
-    setState(() => _showOverlay = !_showOverlay);
-    if (_showOverlay) _scheduleOverlayHide();
   }
 
   Future<dynamic> _handlePipCall(MethodCall call) async {
@@ -259,10 +242,10 @@ class _WatchScreenState extends State<WatchScreen> {
                 leading: const Icon(Icons.download_outlined),
                 title: Text(q),
                 onTap: () {
-                  widget.controller.saveDownload(video.id, q);
+                  widget.controller.startDownload(video, q);
                   Navigator.pop(context);
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Saved "${video.title}" ($q)')),
+                    SnackBar(content: Text('Downloading "${video.title}" ($q)...')),
                   );
                 },
               ),
@@ -372,10 +355,25 @@ class _WatchScreenState extends State<WatchScreen> {
                           : ListView.separated(
                               controller: scrollController,
                               padding: const EdgeInsets.all(16),
-                              itemCount: video.comments.length,
+                              itemCount: video.comments.length +
+                                  (widget.controller.hasMoreComments ? 1 : 0),
                               separatorBuilder: (_, __) =>
                                   const SizedBox(height: 16),
                               itemBuilder: (_, index) {
+                                if (index >= video.comments.length) {
+                                  return Center(
+                                    child: widget.controller.isLoadingMoreComments
+                                        ? const Padding(
+                                            padding: EdgeInsets.all(8),
+                                            child: CircularProgressIndicator(),
+                                          )
+                                        : OutlinedButton(
+                                            onPressed:
+                                                widget.controller.loadMoreComments,
+                                            child: const Text('Show more comments'),
+                                          ),
+                                  );
+                                }
                                 final c = video.comments[index];
                                 final initial = c.author.isNotEmpty
                                     ? c.author.replaceAll('@', '')[0].toUpperCase()
@@ -600,111 +598,108 @@ class _WatchScreenState extends State<WatchScreen> {
         final upNext = widget.controller.upNextFor(video);
         final player = _ytController;
 
-        if (_isInPipMode) {
-          return Scaffold(
-            backgroundColor: Colors.black,
-            body: Center(
-              child: player != null
-                  ? YoutubePlayer(controller: player)
-                  : const CircularProgressIndicator(),
-            ),
-          );
-        }
-
         return Scaffold(
+          backgroundColor: _isInPipMode ? Colors.black : null,
           body: SafeArea(
+            top: !_isInPipMode,
+            bottom: !_isInPipMode,
             child: Column(
+              mainAxisAlignment: _isInPipMode
+                  ? MainAxisAlignment.center
+                  : MainAxisAlignment.start,
               children: [
                 GestureDetector(
-                  onVerticalDragEnd: (details) {
-                    if ((details.primaryVelocity ?? 0) > 350) {
-                      Navigator.pop(context);
-                    }
-                  },
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.translucent,
-                    onTap: _toggleOverlay,
-                    child: Stack(
-                      children: [
-                        if (player != null)
-                          YoutubePlayer(controller: player)
-                        else
-                          const AspectRatio(
-                            aspectRatio: 16 / 9,
-                            child: Center(child: CircularProgressIndicator()),
+                  onVerticalDragEnd: _isInPipMode
+                      ? null
+                      : (details) {
+                          if ((details.primaryVelocity ?? 0) > 350) {
+                            Navigator.pop(context);
+                          }
+                        },
+                  child: Stack(
+                    children: [
+                      if (player != null)
+                        YoutubePlayer(
+                          key: _playerKey,
+                          controller: player,
+                        )
+                      else
+                        const AspectRatio(
+                          aspectRatio: 16 / 9,
+                          child: Center(child: CircularProgressIndicator()),
+                        ),
+                      if (!_isInPipMode)
+                        Positioned(
+                          top: 6,
+                          left: 6,
+                          right: 6,
+                          child: Row(
+                            children: [
+                              IconButton(
+                                style: IconButton.styleFrom(
+                                  backgroundColor: Colors.black54,
+                                  foregroundColor: Colors.white,
+                                ),
+                                onPressed: () => Navigator.pop(context),
+                                icon: const Icon(
+                                  Icons.keyboard_arrow_down_rounded,
+                                ),
+                                tooltip: 'Minimize',
+                              ),
+                              const Spacer(),
+                              if (_skippedNotice != null)
+                                Container(
+                                  margin: const EdgeInsets.only(right: 6),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 4,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black54,
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Text(
+                                    _skippedNotice!,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                ),
+                              IconButton(
+                                style: IconButton.styleFrom(
+                                  backgroundColor: Colors.black54,
+                                  foregroundColor: Colors.white,
+                                ),
+                                onPressed: _enterPip,
+                                icon: const Icon(
+                                  Icons.picture_in_picture_alt_rounded,
+                                  size: 20,
+                                ),
+                                tooltip: 'Picture-in-Picture',
+                              ),
+                              const SizedBox(width: 4),
+                              IconButton(
+                                style: IconButton.styleFrom(
+                                  backgroundColor: Colors.black54,
+                                  foregroundColor: Colors.white,
+                                ),
+                                onPressed: () =>
+                                    _showPlayerSettingsSheet(context),
+                                icon: const Icon(
+                                  Icons.settings_outlined,
+                                  size: 20,
+                                ),
+                                tooltip: 'Quality & Speed',
+                              ),
+                            ],
                           ),
-                        if (_showOverlay)
-                          Positioned(
-                            top: 4,
-                            left: 4,
-                            right: 4,
-                            child: Row(
-                              children: [
-                                IconButton(
-                                  style: IconButton.styleFrom(
-                                    backgroundColor: Colors.black45,
-                                    foregroundColor: Colors.white,
-                                  ),
-                                  onPressed: () => Navigator.pop(context),
-                                  icon: const Icon(
-                                    Icons.keyboard_arrow_down_rounded,
-                                  ),
-                                  tooltip: 'Minimize',
-                                ),
-                                const Spacer(),
-                                if (_skippedNotice != null)
-                                  Container(
-                                    margin: const EdgeInsets.only(right: 6),
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 10,
-                                      vertical: 4,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: Colors.black54,
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                    child: Text(
-                                      _skippedNotice!,
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 11,
-                                      ),
-                                    ),
-                                  ),
-                                IconButton(
-                                  style: IconButton.styleFrom(
-                                    backgroundColor: Colors.black45,
-                                    foregroundColor: Colors.white,
-                                  ),
-                                  onPressed: _enterPip,
-                                  icon: const Icon(
-                                    Icons.picture_in_picture_alt_rounded,
-                                    size: 20,
-                                  ),
-                                  tooltip: 'Picture-in-Picture',
-                                ),
-                                const SizedBox(width: 4),
-                                IconButton(
-                                  style: IconButton.styleFrom(
-                                    backgroundColor: Colors.black45,
-                                    foregroundColor: Colors.white,
-                                  ),
-                                  onPressed: () =>
-                                      _showPlayerSettingsSheet(context),
-                                  icon: const Icon(
-                                    Icons.settings_outlined,
-                                    size: 20,
-                                  ),
-                                  tooltip: 'Player settings',
-                                ),
-                              ],
-                            ),
-                          ),
-                      ],
-                    ),
+                        ),
+                    ],
                   ),
                 ),
-                Expanded(
+                if (!_isInPipMode)
+                  Expanded(
                   child: ListView(
                     padding: const EdgeInsets.only(bottom: 24),
                     children: [
@@ -948,16 +943,22 @@ class _WatchScreenState extends State<WatchScreen> {
                                     ],
                                   ),
                                   const SizedBox(height: 6),
-                                  Text(
-                                    video.description.isEmpty
-                                        ? 'No description provided.'
-                                        : video.description,
-                                    maxLines: _descriptionExpanded ? null : 2,
-                                    overflow: _descriptionExpanded
-                                        ? TextOverflow.visible
-                                        : TextOverflow.ellipsis,
-                                    style: theme.textTheme.bodySmall,
-                                  ),
+                                  if (widget.controller.isLoadingWatchDetails &&
+                                      video.description.isEmpty) ...[
+                                    const SkeletonBox(height: 12),
+                                    const SizedBox(height: 6),
+                                    const SkeletonBox(width: 220, height: 12),
+                                  ] else
+                                    Text(
+                                      video.description.isEmpty
+                                          ? 'No description provided.'
+                                          : video.description,
+                                      maxLines: _descriptionExpanded ? null : 2,
+                                      overflow: _descriptionExpanded
+                                          ? TextOverflow.visible
+                                          : TextOverflow.ellipsis,
+                                      style: theme.textTheme.bodySmall,
+                                    ),
                                   if (_descriptionExpanded && video.chapters.isNotEmpty) ...[
                                     const SizedBox(height: 12),
                                     for (final chapter in video.chapters)

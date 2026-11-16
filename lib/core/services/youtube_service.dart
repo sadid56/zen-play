@@ -1,8 +1,20 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import 'package:zenplay/core/models/channel_info.dart';
 import 'package:zenplay/core/models/video_item.dart';
+
+class CommentsPage {
+  const CommentsPage({
+    this.comments = const [],
+    this.nextToken,
+  });
+
+  final List<CommentItem> comments;
+  final String? nextToken;
+}
 
 class PlaybackDetails {
   const PlaybackDetails({
@@ -14,6 +26,7 @@ class PlaybackDetails {
     this.availableQualities = const ['Auto'],
     this.sponsorSegments = const [],
     this.comments = const [],
+    this.commentsNextToken,
     this.liveChatMessages = const [],
   });
 
@@ -25,6 +38,7 @@ class PlaybackDetails {
   final List<String> availableQualities;
   final List<SponsorSegment> sponsorSegments;
   final List<CommentItem> comments;
+  final String? commentsNextToken;
   final List<LiveChatMessage> liveChatMessages;
 }
 
@@ -357,7 +371,7 @@ class YoutubeService {
     final meta = results[0] as ({String? description, String? likes, bool isLive, String? channelId})?;
     final segments = results[1] as List<SponsorSegment>;
     final ryd = results[2] as ({String? likes, String? dislikes})?;
-    final comments = results[3] as List<CommentItem>;
+    final commentsPage = results[3] as CommentsPage;
     var subs = results[4] as String?;
     var liveChat = results[5] as List<LiveChatMessage>;
     final qualities = results[6] as List<String>;
@@ -379,7 +393,8 @@ class YoutubeService {
       isLive: isLive,
       availableQualities: qualities,
       sponsorSegments: segments,
-      comments: comments,
+      comments: commentsPage.comments,
+      commentsNextToken: commentsPage.nextToken,
       liveChatMessages: liveChat,
     );
   }
@@ -516,13 +531,16 @@ class YoutubeService {
     }
   }
 
-  Future<List<CommentItem>> _fetchComments(String videoId) async {
+  Future<CommentsPage> _fetchComments(String videoId) async {
+    final innerPage = await _innerTubeCommentsFirstPage(videoId);
+    if (innerPage.comments.isNotEmpty) return innerPage;
+
     try {
       final video = await _yt.videos.get(videoId).timeout(const Duration(seconds: 6));
       final commentsList =
           await _yt.videos.comments.getComments(video).timeout(const Duration(seconds: 8));
       if (commentsList != null && commentsList.isNotEmpty) {
-        return commentsList.take(25).map((c) {
+        final items = commentsList.take(20).map((c) {
           return CommentItem(
             id: '${c.author}_${c.publishedTime}',
             author: c.author,
@@ -532,13 +550,14 @@ class YoutubeService {
             replyCount: c.replyCount,
           );
         }).toList();
+        return CommentsPage(comments: items);
       }
     } catch (_) {}
 
-    return _innerTubeComments(videoId);
+    return const CommentsPage();
   }
 
-  Future<List<CommentItem>> _innerTubeComments(String videoId) async {
+  Future<CommentsPage> _innerTubeCommentsFirstPage(String videoId) async {
     try {
       final uri = Uri.https('www.youtube.com', '/youtubei/v1/next');
       const headers = {'Content-Type': 'application/json'};
@@ -561,31 +580,72 @@ class YoutubeService {
             }),
           )
           .timeout(const Duration(seconds: 8));
-      if (firstRes.statusCode != 200) return const [];
+      if (firstRes.statusCode != 200) return const CommentsPage();
 
-      final firstJson = jsonDecode(firstRes.body);
-      final token = _findCommentsToken(firstJson);
-      if (token == null) return const [];
+      final token = _findCommentsToken(jsonDecode(firstRes.body));
+      if (token == null) return const CommentsPage();
+      return fetchMoreComments(token);
+    } catch (_) {
+      return const CommentsPage();
+    }
+  }
 
-      final secondRes = await _http
+  Future<CommentsPage> fetchMoreComments(String continuationToken) async {
+    try {
+      final uri = Uri.https('www.youtube.com', '/youtubei/v1/next');
+      final res = await _http
           .post(
             uri,
-            headers: headers,
+            headers: const {'Content-Type': 'application/json'},
             body: jsonEncode({
-              'context': clientContext,
-              'continuation': token,
+              'context': const {
+                'client': {
+                  'clientName': 'WEB',
+                  'clientVersion': '2.20241114.01.00',
+                  'hl': 'en',
+                  'gl': 'US',
+                },
+              },
+              'continuation': continuationToken,
             }),
           )
           .timeout(const Duration(seconds: 8));
-      if (secondRes.statusCode != 200) return const [];
+      if (res.statusCode != 200) return const CommentsPage();
 
-      final secondJson = jsonDecode(secondRes.body);
+      final json = jsonDecode(res.body);
       final comments = <CommentItem>[];
-      _collectComments(secondJson, comments);
-      return comments.take(25).toList();
+      _collectComments(json, comments);
+      final nextToken = _findNextContinuationToken(json, continuationToken);
+      return CommentsPage(
+        comments: comments.take(20).toList(),
+        nextToken: nextToken,
+      );
     } catch (_) {
-      return const [];
+      return const CommentsPage();
     }
+  }
+
+  String? _findNextContinuationToken(dynamic node, String currentToken) {
+    if (node is Map<String, dynamic>) {
+      final cir = node['continuationItemRenderer'];
+      if (cir is Map<String, dynamic>) {
+        final token = cir['continuationEndpoint']?['continuationCommand']
+            ?['token'] as String?;
+        if (token != null && token.isNotEmpty && token != currentToken) {
+          return token;
+        }
+      }
+      for (final value in node.values) {
+        final found = _findNextContinuationToken(value, currentToken);
+        if (found != null) return found;
+      }
+    } else if (node is List) {
+      for (final item in node) {
+        final found = _findNextContinuationToken(item, currentToken);
+        if (found != null) return found;
+      }
+    }
+    return null;
   }
 
   String? _findCommentsToken(dynamic node) {
@@ -843,6 +903,56 @@ class YoutubeService {
       return '${(count / 1000).toStringAsFixed(1)}K';
     }
     return '$count';
+  }
+
+  Future<String?> downloadVideoStream(
+    String videoId,
+    String qualityLabel,
+    void Function(double progress) onProgress,
+  ) async {
+    final manifest = await _yt.videos.streamsClient.getManifest(videoId);
+    final isAudioOnly = qualityLabel.toLowerCase().contains('audio');
+
+    final StreamInfo streamInfo;
+    if (isAudioOnly && manifest.audioOnly.isNotEmpty) {
+      streamInfo = manifest.audioOnly.withHighestBitrate();
+    } else if (manifest.muxed.isNotEmpty) {
+      final muxedList = manifest.muxed.sortByVideoQuality();
+      final match = muxedList.where((s) =>
+          qualityLabel.contains('${s.videoResolution.height}')).firstOrNull;
+      streamInfo = match ?? muxedList.last;
+    } else if (manifest.audioOnly.isNotEmpty) {
+      streamInfo = manifest.audioOnly.withHighestBitrate();
+    } else {
+      return null;
+    }
+
+    final docsDir = await getApplicationDocumentsDirectory();
+    final downloadsDir = Directory('${docsDir.path}/downloads');
+    if (!await downloadsDir.exists()) {
+      await downloadsDir.create(recursive: true);
+    }
+
+    final ext = isAudioOnly ? 'm4a' : 'mp4';
+    final file = File('${downloadsDir.path}/$videoId.$ext');
+    final sink = file.openWrite();
+
+    try {
+      final totalBytes = streamInfo.size.totalBytes;
+      var receivedBytes = 0;
+      await for (final chunk in _yt.videos.streamsClient.get(streamInfo)) {
+        sink.add(chunk);
+        receivedBytes += chunk.length;
+        if (totalBytes > 0) {
+          onProgress((receivedBytes / totalBytes).clamp(0.0, 1.0));
+        }
+      }
+      await sink.flush();
+      onProgress(1.0);
+      return file.path;
+    } finally {
+      await sink.close();
+    }
   }
 
   void dispose() {
