@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
+import 'package:zenplay/core/data/video_repository.dart' show ApiEndpoints;
 import 'package:zenplay/core/models/channel_info.dart';
 import 'package:zenplay/core/models/video_item.dart';
 
@@ -16,8 +17,42 @@ class CommentsPage {
   final String? nextToken;
 }
 
+class ChannelProfileData {
+  const ChannelProfileData({
+    this.subscriberCount,
+    this.avatarUrl,
+    this.description,
+    this.videoCountText,
+    this.viewCountText,
+    this.joinedDateText,
+    this.country,
+    this.uploads = const [],
+  });
+
+  final String? subscriberCount;
+  final String? avatarUrl;
+  final String? description;
+  final String? videoCountText;
+  final String? viewCountText;
+  final String? joinedDateText;
+  final String? country;
+  final List<VideoItem> uploads;
+}
+
+class StreamTrackOption {
+  const StreamTrackOption({
+    required this.videoUrl,
+    this.audioUrl,
+  });
+
+  final String videoUrl;
+  final String? audioUrl;
+}
+
 class PlaybackDetails {
   const PlaybackDetails({
+    this.streamUrl,
+    this.qualityStreams = const {},
     this.description,
     this.likesCount,
     this.dislikesCount,
@@ -29,9 +64,12 @@ class PlaybackDetails {
     this.comments = const [],
     this.commentsNextToken,
     this.totalCommentsCount,
+    this.relatedVideos = const [],
     this.liveChatMessages = const [],
   });
 
+  final String? streamUrl;
+  final Map<String, StreamTrackOption> qualityStreams;
   final String? description;
   final String? likesCount;
   final String? dislikesCount;
@@ -43,16 +81,19 @@ class PlaybackDetails {
   final List<CommentItem> comments;
   final String? commentsNextToken;
   final String? totalCommentsCount;
+  final List<VideoItem> relatedVideos;
   final List<LiveChatMessage> liveChatMessages;
 }
 
 class YoutubeService {
   YoutubeService({
+    this.endpoints = const ApiEndpoints(),
     YoutubeExplode? explode,
     http.Client? httpClient,
   })  : _yt = explode ?? YoutubeExplode(),
         _http = httpClient ?? http.Client();
 
+  final ApiEndpoints endpoints;
   final YoutubeExplode _yt;
   final http.Client _http;
 
@@ -113,14 +154,28 @@ class YoutubeService {
     return searchVideos(query, category: category);
   }
 
+  static String? extractVideoId(String input) {
+    final trimmed = input.trim();
+    if (trimmed.isEmpty) return null;
+    final parsed = VideoId.parseVideoId(trimmed);
+    return parsed;
+  }
+
+  Future<VideoItem?> fetchVideoById(String videoId) async {
+    try {
+      final v = await _yt.videos.get(videoId).timeout(const Duration(seconds: 8));
+      return _mapVideo(v, 'All');
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<List<String>> fetchSearchSuggestions(String query) async {
     final trimmed = query.trim();
     if (trimmed.isEmpty) return const [];
     try {
-      final uri = Uri.https(
-        'suggestqueries.google.com',
-        '/complete/search',
-        {
+      final uri = Uri.parse(endpoints.youtubeSuggestUrl).replace(
+        queryParameters: {
           'client': 'firefox',
           'ds': 'yt',
           'q': trimmed,
@@ -165,7 +220,7 @@ class YoutubeService {
     bool liveOnly = false,
   }) async {
     try {
-      final uri = Uri.https('www.youtube.com', '/youtubei/v1/search');
+      final uri = Uri.parse(endpoints.youtubeSearchUrl);
       final body = <String, dynamic>{
         'context': {
           'client': {
@@ -337,7 +392,7 @@ class YoutubeService {
     try {
       final response = await _http
           .post(
-            Uri.https('www.youtube.com', '/youtubei/v1/browse'),
+            Uri.parse(endpoints.youtubeBrowseUrl),
             headers: const {'Content-Type': 'application/json'},
             body: jsonEncode({
               'context': {
@@ -356,6 +411,235 @@ class YoutubeService {
       return _findSubscriberCount(jsonDecode(response.body));
     } catch (_) {
       return null;
+    }
+  }
+
+  Future<ChannelProfileData> fetchChannelProfile(
+    String channelId,
+    String channelName,
+  ) async {
+    String? subscriberCount;
+    String? avatarUrl;
+    String? description;
+    String? videoCountText;
+    String? viewCountText;
+    String? joinedDateText;
+    String? country;
+    List<VideoItem> uploads = const [];
+
+    if (channelId.startsWith('UC')) {
+      try {
+        final res = await _http
+            .post(
+              Uri.parse(endpoints.youtubeBrowseUrl),
+              headers: const {'Content-Type': 'application/json'},
+              body: jsonEncode({
+                'context': const {
+                  'client': {
+                    'clientName': 'WEB',
+                    'clientVersion': '2.20241114.01.00',
+                    'hl': 'en',
+                    'gl': 'US',
+                  },
+                },
+                'browseId': channelId,
+                'params': 'EgZ2aWRlb3PyBgQKAjoA',
+              }),
+            )
+            .timeout(const Duration(seconds: 8));
+
+        if (res.statusCode == 200) {
+          final json = jsonDecode(res.body);
+          subscriberCount = _findSubscriberCount(json);
+          final meta = _extractChannelMetadata(json);
+          description = meta.description;
+          avatarUrl = meta.avatarUrl;
+          videoCountText = meta.videoCount;
+          viewCountText = meta.viewCount;
+          joinedDateText = meta.joinedDate;
+          country = meta.country;
+
+          final parsed = <VideoItem>[];
+          _collectChannelVideos(
+            json,
+            parsed,
+            channelId: channelId,
+            channelName: channelName,
+            avatarUrl: avatarUrl,
+          );
+          uploads = parsed;
+        }
+      } catch (_) {}
+
+      if (uploads.isEmpty) {
+        try {
+          final ytUploads =
+              await _yt.channels.getUploads(channelId).take(15).toList();
+          if (ytUploads.isNotEmpty) {
+            uploads = ytUploads.map((v) => _mapVideo(v, 'All')).toList();
+          }
+        } catch (_) {}
+      }
+
+      if (subscriberCount == null) {
+        subscriberCount = await fetchChannelSubscribers(channelId);
+      }
+    }
+
+    if (uploads.isEmpty) {
+      final searched = await searchVideos(channelName);
+      final lower = channelName.trim().toLowerCase();
+      uploads = searched
+          .where((v) =>
+              v.channel.id == channelId ||
+              v.channel.name.trim().toLowerCase() == lower)
+          .toList();
+    }
+
+    return ChannelProfileData(
+      subscriberCount: subscriberCount,
+      avatarUrl: avatarUrl,
+      description: description,
+      videoCountText: videoCountText,
+      viewCountText: viewCountText,
+      joinedDateText: joinedDateText,
+      country: country,
+      uploads: uploads,
+    );
+  }
+
+  ({
+    String? description,
+    String? avatarUrl,
+    String? videoCount,
+    String? viewCount,
+    String? joinedDate,
+    String? country,
+  }) _extractChannelMetadata(dynamic node) {
+    String? description;
+    String? avatarUrl;
+    String? videoCount;
+    String? viewCount;
+    String? joinedDate;
+    String? country;
+
+    void walk(dynamic n) {
+      if (n is Map<String, dynamic>) {
+        final meta = n['channelMetadataRenderer'];
+        if (meta is Map<String, dynamic>) {
+          description ??= meta['description'] as String?;
+          final thumbs = (meta['avatar']?['thumbnails'] as List?) ?? const [];
+          if (thumbs.isNotEmpty) {
+            avatarUrl ??= thumbs.last['url'] as String?;
+          }
+        }
+        final about = n['aboutChannelViewModel'];
+        if (about is Map<String, dynamic>) {
+          description ??= about['description'] as String?;
+          videoCount ??= about['videoCountText'] as String?;
+          viewCount ??= about['viewCountText'] as String?;
+          joinedDate ??= about['joinedDateText']?['content'] as String?;
+          country ??= about['country'] as String?;
+        }
+        final header = n['c4TabbedHeaderRenderer'];
+        if (header is Map<String, dynamic>) {
+          videoCount ??= _readSimpleText(header['videosCountText']);
+        }
+        for (final v in n.values) {
+          walk(v);
+        }
+      } else if (n is List) {
+        for (final item in n) {
+          walk(item);
+        }
+      }
+    }
+
+    walk(node);
+    return (
+      description: description,
+      avatarUrl: avatarUrl,
+      videoCount: videoCount,
+      viewCount: viewCount,
+      joinedDate: joinedDate,
+      country: country,
+    );
+  }
+
+  void _collectChannelVideos(
+    dynamic node,
+    List<VideoItem> out, {
+    required String channelId,
+    required String channelName,
+    String? avatarUrl,
+  }) {
+    if (out.length >= 20) return;
+    if (node is Map<String, dynamic>) {
+      final vr = node['videoRenderer'] ?? node['gridVideoRenderer'];
+      if (vr is Map<String, dynamic>) {
+        final videoId = vr['videoId'] as String?;
+        if (videoId != null && videoId.isNotEmpty) {
+          final title = _readRuns(vr['title']) ?? 'Untitled';
+          final durationText = _readSimpleText(vr['lengthText']);
+          final isLive = durationText == null || _hasLiveBadge(vr);
+          final duration = isLive ? 'LIVE' : durationText;
+          final views = _readSimpleText(vr['shortViewCountText']) ??
+              _readSimpleText(vr['viewCountText']) ??
+              '';
+          final published =
+              _readSimpleText(vr['publishedTimeText']) ?? 'Recently';
+          final thumbs = (vr['thumbnail']?['thumbnails'] as List?) ?? const [];
+          final thumbUrl = thumbs.isNotEmpty
+              ? (thumbs.last['url'] as String?)
+              : 'https://i.ytimg.com/vi/$videoId/hqdefault.jpg';
+
+          out.add(
+            VideoItem(
+              id: videoId,
+              title: title,
+              channel: ChannelInfo(
+                id: channelId,
+                name: channelName,
+                handle: '@${channelName.replaceAll(' ', '').toLowerCase()}',
+                subscriberCount: 'YouTube channel',
+                avatarColorValue: _colorForId(channelId),
+                avatarUrl: avatarUrl,
+              ),
+              duration: duration,
+              durationSeconds: _parseDurationSeconds(duration),
+              viewsText: views.isEmpty ? 'YouTube' : views,
+              publishedAgo: published,
+              category: 'All',
+              description: '',
+              likesCount: '—',
+              dislikesCount: '—',
+              accentColorValue: _colorForId(videoId),
+              thumbnailUrl: thumbUrl,
+              isLive: isLive,
+            ),
+          );
+          return;
+        }
+      }
+      for (final value in node.values) {
+        _collectChannelVideos(
+          value,
+          out,
+          channelId: channelId,
+          channelName: channelName,
+          avatarUrl: avatarUrl,
+        );
+      }
+    } else if (node is List) {
+      for (final item in node) {
+        _collectChannelVideos(
+          item,
+          out,
+          channelId: channelId,
+          channelName: channelName,
+          avatarUrl: avatarUrl,
+        );
+      }
     }
   }
 
@@ -387,7 +671,7 @@ class YoutubeService {
         _innerTubeLiveChat(videoId)
       else
         Future<List<LiveChatMessage>>.value(const []),
-      _fetchAvailableQualities(videoId),
+      _fetchAvailableStreams(videoId),
     ]);
 
     final meta = results[0] as ({String? description, String? likes, bool isLive, String? channelId})?;
@@ -396,7 +680,11 @@ class YoutubeService {
     final commentsPage = results[3] as CommentsPage;
     var subs = results[4] as String?;
     var liveChat = results[5] as List<LiveChatMessage>;
-    final qualities = results[6] as List<String>;
+    final streams = results[6] as ({
+      String? defaultUrl,
+      Map<String, StreamTrackOption> qualityStreams,
+      List<String> qualities,
+    });
 
     if (subs == null && meta?.channelId != null) {
       subs = await fetchChannelSubscribers(meta!.channelId!);
@@ -410,48 +698,124 @@ class YoutubeService {
     }
 
     return PlaybackDetails(
+      streamUrl: streams.defaultUrl,
+      qualityStreams: streams.qualityStreams,
       description: meta?.description,
       likesCount: ryd?.likes ?? meta?.likes,
       dislikesCount: ryd?.dislikes,
       subscriberCount: subs,
       channelAvatarUrl: channelAvatarUrl,
       isLive: isLive,
-      availableQualities: qualities,
+      availableQualities: streams.qualities,
       sponsorSegments: segments,
       comments: commentsPage.comments,
       commentsNextToken: commentsPage.nextToken,
       totalCommentsCount: watchOwner?.totalComments,
+      relatedVideos: watchOwner?.relatedVideos ?? const [],
       liveChatMessages: liveChat,
     );
   }
 
-  Future<List<String>> _fetchAvailableQualities(String videoId) async {
+  Future<
+      ({
+        String? defaultUrl,
+        Map<String, StreamTrackOption> qualityStreams,
+        List<String> qualities,
+      })> _fetchAvailableStreams(String videoId) async {
     try {
-      final manifest = await _yt.videos.streamsClient
-          .getManifest(videoId)
-          .timeout(const Duration(seconds: 6));
-      final heights = <int>{};
-      for (final s in manifest.videoOnly) {
-        final h = s.videoResolution.height;
-        if (h > 0) heights.add(h);
+      StreamManifest manifest;
+      try {
+        manifest = await _yt.videos.streamsClient
+            .getManifest(
+              videoId,
+              ytClients: [
+                YoutubeApiClient.ios,
+                YoutubeApiClient.androidSdkless,
+              ],
+            )
+            .timeout(const Duration(seconds: 8));
+      } catch (_) {
+        manifest = await _yt.videos.streamsClient
+            .getManifest(videoId)
+            .timeout(const Duration(seconds: 8));
       }
-      for (final s in manifest.muxed) {
-        final h = s.videoResolution.height;
-        if (h > 0) heights.add(h);
+
+      final qualityStreams = <String, StreamTrackOption>{};
+      final heightByLabel = <String, int>{};
+
+      final bestAudioUrl = manifest.audioOnly.isNotEmpty
+          ? manifest.audioOnly.withHighestBitrate().url.toString()
+          : null;
+
+      for (final s in manifest.muxed.sortByVideoQuality().reversed) {
+        final label = s.qualityLabel;
+        if (!qualityStreams.containsKey(label)) {
+          qualityStreams[label] = StreamTrackOption(videoUrl: s.url.toString());
+          heightByLabel[label] = s.videoResolution.height;
+        }
       }
-      final sorted = heights.toList()..sort((a, b) => b.compareTo(a));
-      return ['Auto', ...sorted.map((h) => '${h}p')];
+
+      if (bestAudioUrl != null) {
+        for (final s in manifest.videoOnly.sortByVideoQuality().reversed) {
+          final label = s.qualityLabel;
+          if (!qualityStreams.containsKey(label)) {
+            qualityStreams[label] = StreamTrackOption(
+              videoUrl: s.url.toString(),
+              audioUrl: bestAudioUrl,
+            );
+            heightByLabel[label] = s.videoResolution.height;
+          }
+        }
+      }
+
+      final sortedLabels = qualityStreams.keys.toList()
+        ..sort((a, b) =>
+            (heightByLabel[b] ?? 0).compareTo(heightByLabel[a] ?? 0));
+
+      if (bestAudioUrl != null) {
+        qualityStreams['Audio only'] = StreamTrackOption(videoUrl: bestAudioUrl);
+        sortedLabels.add('Audio only');
+      }
+
+      String? defaultUrl;
+      if (manifest.hls.isNotEmpty) {
+        defaultUrl = manifest.hls.first.url.toString();
+        qualityStreams['Auto'] = StreamTrackOption(videoUrl: defaultUrl);
+      } else if (sortedLabels.isNotEmpty) {
+        final preferred = sortedLabels.firstWhere(
+          (l) => (heightByLabel[l] ?? 0) <= 1080 && (heightByLabel[l] ?? 0) > 0,
+          orElse: () => sortedLabels.first,
+        );
+        final track = qualityStreams[preferred]!;
+        defaultUrl = track.videoUrl;
+        qualityStreams['Auto'] = track;
+      }
+
+      return (
+        defaultUrl: defaultUrl,
+        qualityStreams: qualityStreams,
+        qualities: ['Auto', ...sortedLabels],
+      );
     } catch (_) {
-      return const ['Auto', '1080p', '720p', '480p', '360p'];
+      return (
+        defaultUrl: null,
+        qualityStreams: const <String, StreamTrackOption>{},
+        qualities: const ['Auto'],
+      );
     }
   }
 
-  Future<({String? subscribers, String? avatarUrl, String? totalComments})?>
-      _fetchWatchOwnerInfo(String videoId) async {
+  Future<
+      ({
+        String? subscribers,
+        String? avatarUrl,
+        String? totalComments,
+        List<VideoItem> relatedVideos,
+      })?> _fetchWatchOwnerInfo(String videoId) async {
     try {
       final res = await _http
           .post(
-            Uri.https('www.youtube.com', '/youtubei/v1/next'),
+            Uri.parse(endpoints.youtubeNextUrl),
             headers: const {'Content-Type': 'application/json'},
             body: jsonEncode({
               'context': {
@@ -468,13 +832,35 @@ class YoutubeService {
           .timeout(const Duration(seconds: 6));
       if (res.statusCode != 200) return null;
       final json = jsonDecode(res.body);
+      final related = <VideoItem>[];
+      _collectCompactRenderers(json, related);
       return (
         subscribers: _findSubscriberCount(json),
         avatarUrl: _findOwnerAvatarUrl(json),
         totalComments: _findTotalCommentsCount(json),
+        relatedVideos: related,
       );
     } catch (_) {
       return null;
+    }
+  }
+
+  void _collectCompactRenderers(dynamic node, List<VideoItem> out) {
+    if (out.length >= 12) return;
+    if (node is Map<String, dynamic>) {
+      final cr = node['compactVideoRenderer'];
+      if (cr is Map<String, dynamic>) {
+        final mapped = _mapInnerTubeRenderer(cr, 'All');
+        if (mapped != null) out.add(mapped);
+        return;
+      }
+      for (final value in node.values) {
+        _collectCompactRenderers(value, out);
+      }
+    } else if (node is List) {
+      for (final item in node) {
+        _collectCompactRenderers(item, out);
+      }
     }
   }
 
@@ -569,10 +955,8 @@ class YoutubeService {
 
   Future<List<SponsorSegment>> _fetchSponsorSegments(String videoId) async {
     try {
-      final uri = Uri.https(
-        'sponsor.ajay.app',
-        '/api/skipSegments',
-        {'videoID': videoId},
+      final uri = Uri.parse(endpoints.sponsorBlockUrl).replace(
+        queryParameters: {'videoID': videoId},
       );
       final response = await _http.get(uri).timeout(const Duration(seconds: 5));
       if (response.statusCode != 200) return const [];
@@ -595,10 +979,8 @@ class YoutubeService {
 
   Future<({String? likes, String? dislikes})?> _fetchReturnDislike(String videoId) async {
     try {
-      final uri = Uri.https(
-        'returnyoutubedislikeapi.com',
-        '/votes',
-        {'videoId': videoId},
+      final uri = Uri.parse(endpoints.returnDislikeUrl).replace(
+        queryParameters: {'videoId': videoId},
       );
       final response = await _http.get(uri).timeout(const Duration(seconds: 5));
       if (response.statusCode != 200) return null;
@@ -641,7 +1023,7 @@ class YoutubeService {
 
   Future<CommentsPage> _innerTubeCommentsFirstPage(String videoId) async {
     try {
-      final uri = Uri.https('www.youtube.com', '/youtubei/v1/next');
+      final uri = Uri.parse(endpoints.youtubeNextUrl);
       const headers = {'Content-Type': 'application/json'};
       const clientContext = {
         'client': {
@@ -674,7 +1056,7 @@ class YoutubeService {
 
   Future<CommentsPage> fetchMoreComments(String continuationToken) async {
     try {
-      final uri = Uri.https('www.youtube.com', '/youtubei/v1/next');
+      final uri = Uri.parse(endpoints.youtubeNextUrl);
       final res = await _http
           .post(
             uri,
@@ -696,14 +1078,56 @@ class YoutubeService {
 
       final json = jsonDecode(res.body);
       final comments = <CommentItem>[];
+      final replyTokensById = <String, String>{};
+      _collectReplyTokens(json, replyTokensById);
       _collectComments(json, comments);
+      final enriched = comments
+          .take(20)
+          .map((c) => CommentItem(
+                id: c.id,
+                author: c.author,
+                text: c.text,
+                publishedAgo: c.publishedAgo,
+                likes: c.likes,
+                avatarUrl: c.avatarUrl,
+                replyCount: c.replyCount,
+                repliesToken: replyTokensById[c.id],
+              ))
+          .toList();
       final nextToken = _findNextContinuationToken(json, continuationToken);
       return CommentsPage(
-        comments: comments.take(20).toList(),
+        comments: enriched,
         nextToken: nextToken,
       );
     } catch (_) {
       return const CommentsPage();
+    }
+  }
+
+  Future<List<CommentItem>> fetchCommentReplies(String repliesToken) async {
+    final page = await fetchMoreComments(repliesToken);
+    return page.comments;
+  }
+
+  void _collectReplyTokens(dynamic node, Map<String, String> out) {
+    if (node is Map<String, dynamic>) {
+      final thread = node['commentThreadRenderer'];
+      if (thread is Map<String, dynamic>) {
+        final commentId = thread['commentViewModel']?['commentViewModel']
+                ?['commentId'] as String? ??
+            thread['comment']?['commentRenderer']?['commentId'] as String?;
+        final token = _findFirstToken(thread['replies']);
+        if (commentId != null && token != null) {
+          out[commentId] = token;
+        }
+      }
+      for (final value in node.values) {
+        _collectReplyTokens(value, out);
+      }
+    } else if (node is List) {
+      for (final item in node) {
+        _collectReplyTokens(item, out);
+      }
     }
   }
 
@@ -853,7 +1277,7 @@ class YoutubeService {
 
       final nextRes = await _http
           .post(
-            Uri.https('www.youtube.com', '/youtubei/v1/next'),
+            Uri.parse(endpoints.youtubeNextUrl),
             headers: headers,
             body: jsonEncode({
               'context': clientContext,
@@ -868,7 +1292,7 @@ class YoutubeService {
 
       final chatRes = await _http
           .post(
-            Uri.https('www.youtube.com', '/youtubei/v1/live_chat/get_live_chat'),
+            Uri.parse(endpoints.youtubeLiveChatUrl),
             headers: headers,
             body: jsonEncode({
               'context': clientContext,

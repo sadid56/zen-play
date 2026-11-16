@@ -55,6 +55,32 @@ class _SavedScreenState extends State<SavedScreen> {
     }
   }
 
+  Future<void> _confirmDeleteFolder(String folder) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Delete folder?'),
+        content: Text('Remove "$folder" and its saved references?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      if (_selectedFolder == folder) {
+        setState(() => _selectedFolder = null);
+      }
+      widget.controller.deleteFolder(folder);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
@@ -150,31 +176,52 @@ class _SavedScreenState extends State<SavedScreen> {
               ),
             ),
             Expanded(
-              child: ListView.builder(
-                padding: const EdgeInsets.all(16),
-                itemCount: folders.length,
-                itemBuilder: (_, index) {
-                  final folder = folders[index];
-                  final count = widget.controller.countInFolder(folder);
-                  return Card(
-                    margin: const EdgeInsets.only(bottom: 12),
-                    child: ListTile(
-                      leading: CircleAvatar(
-                        backgroundColor:
-                            Theme.of(context).colorScheme.secondaryContainer,
-                        child: const Icon(Icons.folder_rounded),
-                      ),
-                      title: Text(
-                        folder,
-                        style: const TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                      subtitle: Text('$count ${count == 1 ? 'video' : 'videos'}'),
-                      trailing: const Icon(Icons.chevron_right_rounded),
-                      onTap: () => setState(() => _selectedFolder = folder),
+              child: folders.isEmpty
+                  ? const EmptyStateView(
+                      icon: Icons.folder_open_outlined,
+                      title: 'No saved folders yet',
+                      subtitle:
+                          'Tap New folder to create collections for your videos.',
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.all(16),
+                      itemCount: folders.length,
+                      itemBuilder: (_, index) {
+                        final folder = folders[index];
+                        final count = widget.controller.countInFolder(folder);
+                        return Card(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          child: ListTile(
+                            leading: CircleAvatar(
+                              backgroundColor: Theme.of(context)
+                                  .colorScheme
+                                  .secondaryContainer,
+                              child: const Icon(Icons.folder_rounded),
+                            ),
+                            title: Text(
+                              folder,
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.w600),
+                            ),
+                            subtitle:
+                                Text('$count ${count == 1 ? 'video' : 'videos'}'),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  icon: const Icon(Icons.delete_outline_rounded),
+                                  tooltip: 'Delete folder',
+                                  onPressed: () => _confirmDeleteFolder(folder),
+                                ),
+                                const Icon(Icons.chevron_right_rounded),
+                              ],
+                            ),
+                            onTap: () =>
+                                setState(() => _selectedFolder = folder),
+                          ),
+                        );
+                      },
                     ),
-                  );
-                },
-              ),
             ),
           ],
         );

@@ -163,13 +163,17 @@ class _ZenPlayShellState extends State<ZenPlayShell> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     if (activeVideo != null && !isWatchExpanded)
-                      MiniPlayerBar(
-                        video: activeVideo,
-                        isPlaying: widget.controller.isPlaying,
-                        progress: widget.controller.playbackProgress,
-                        onTap: () => _openActiveWatch(context),
-                        onTogglePlay: widget.controller.togglePlayPause,
-                        onClose: widget.controller.closeMiniPlayer,
+                      ValueListenableBuilder<double>(
+                        valueListenable:
+                            widget.controller.playbackProgressNotifier,
+                        builder: (_, progress, __) => MiniPlayerBar(
+                          video: activeVideo,
+                          isPlaying: widget.controller.isPlaying,
+                          progress: progress,
+                          onTap: () => _openActiveWatch(context),
+                          onTogglePlay: widget.controller.togglePlayPause,
+                          onClose: widget.controller.closeMiniPlayer,
+                        ),
                       ),
                     NavigationBar(
                       selectedIndex: widget.controller.navIndex,

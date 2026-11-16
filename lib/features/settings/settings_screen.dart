@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:zenplay/core/state/zenplay_controller.dart';
 import 'package:zenplay/shared/widgets/zenplay_logo.dart';
 
@@ -54,6 +55,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ],
               if (_matches('Picture-in-Picture', 'Continue playing when leaving app') ||
+                  _matches('Auto-play next video', 'Play next video automatically') ||
                   _matches('Default resolution', c.selectedQuality) ||
                   _matches('Default playback speed', '${c.playbackSpeed}x')) ...[
                 const _SectionLabel('Playback'),
@@ -64,6 +66,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     subtitle: const Text('Continue playing when leaving app'),
                     value: c.backgroundPlayEnabled,
                     onChanged: c.setBackgroundPlay,
+                  ),
+                if (_matches('Auto-play next video', 'Play next video automatically'))
+                  SwitchListTile(
+                    secondary: const Icon(Icons.skip_next_outlined),
+                    title: const Text('Auto-play next video'),
+                    subtitle: const Text('Play next video automatically'),
+                    value: c.autoPlayEnabled,
+                    onChanged: c.setAutoPlay,
                   ),
                 if (_matches('Default resolution', c.selectedQuality))
                   ListTile(
@@ -151,19 +161,81 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           },
                   ),
               ],
-              if (_matches('ZenPlay', 'Android & iOS')) ...[
-                const _SectionLabel('About'),
-                const ListTile(
-                  leading: ZenPlayLogo(size: 36),
-                  title: Text('ZenPlay'),
-                  subtitle: Text('Material 3 client for Android & iOS • v1.0.0'),
-                ),
+              if (_matches('Backup & Restore', 'Export or import saved collections') ||
+                  _matches('ZenPlay', 'Android & iOS')) ...[
+                const _SectionLabel('Backup & About'),
+                if (_matches('Backup & Restore', 'Export or import saved collections')) ...[
+                  ListTile(
+                    leading: const Icon(Icons.upload_file_outlined),
+                    title: const Text('Export backup'),
+                    subtitle: const Text('Copy saved folders & settings JSON'),
+                    onTap: () async {
+                      final json = c.exportBackupJson();
+                      await Clipboard.setData(ClipboardData(text: json));
+                      if (!context.mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Backup JSON copied to clipboard')),
+                      );
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.download_for_offline_outlined),
+                    title: const Text('Import backup'),
+                    subtitle: const Text('Restore saved folders & settings from JSON'),
+                    onTap: () => _showImportDialog(context, c),
+                  ),
+                ],
+                if (_matches('ZenPlay', 'Android & iOS'))
+                  const ListTile(
+                    leading: ZenPlayLogo(size: 36),
+                    title: Text('ZenPlay'),
+                    subtitle: Text('Material 3 client for Android & iOS • v1.0.0'),
+                  ),
               ],
             ],
           ),
         );
       },
     );
+  }
+
+  Future<void> _showImportDialog(
+    BuildContext context,
+    ZenPlayController c,
+  ) async {
+    final textController = TextEditingController();
+    final raw = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Import backup JSON'),
+        content: TextField(
+          controller: textController,
+          maxLines: 4,
+          decoration: const InputDecoration(
+            hintText: 'Paste exported backup JSON here',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, textController.text),
+            child: const Text('Restore'),
+          ),
+        ],
+      ),
+    );
+    textController.dispose();
+    if (raw != null && raw.trim().isNotEmpty && context.mounted) {
+      final ok = c.importBackupJson(raw.trim());
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(ok ? 'Backup restored' : 'Invalid backup JSON'),
+        ),
+      );
+    }
   }
 
   String _themeLabel(ThemeMode mode) {

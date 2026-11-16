@@ -1,20 +1,23 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:youtube_player_flutter/youtube_player_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:video_player/video_player.dart';
 import 'package:zenplay/core/data/video_repository.dart';
+import 'package:zenplay/core/models/channel_info.dart';
 import 'package:zenplay/core/models/video_item.dart';
-import 'package:zenplay/core/services/youtube_service.dart';
 
-class ZenPlayController extends ChangeNotifier {
+class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
   ZenPlayController({
-    YoutubeService? youtubeService,
+    VideoDataRepository? repository,
     this.enableRemoteFetch = true,
-  }) : _youtube = youtubeService ?? YoutubeService() {
+  }) : _repository = repository ?? YoutubeDataRepository() {
+    WidgetsBinding.instance.addObserver(this);
     if (enableRemoteFetch) {
       _initializeApp();
       _backgroundRefreshTimer = Timer.periodic(
-        const Duration(minutes: 2),
+        const Duration(minutes: 10),
         (_) => refreshFeedInBackground(),
       );
     } else {
@@ -22,9 +25,12 @@ class ZenPlayController extends ChangeNotifier {
     }
   }
 
-  final YoutubeService _youtube;
+  final VideoDataRepository _repository;
   final bool enableRemoteFetch;
   Timer? _backgroundRefreshTimer;
+  Timer? _sleepTimer;
+  int? _sleepTimerMinutes;
+  final Map<String, VideoItem> _persistedVideos = {};
 
   ThemeMode _themeMode = ThemeMode.system;
   int _navIndex = 0;
@@ -34,6 +40,7 @@ class ZenPlayController extends ChangeNotifier {
 
   bool _isAppInitializing = false;
   List<VideoItem> _feedVideos = [];
+  List<VideoItem> _relatedVideos = [];
   List<VideoItem> _searchResults = [];
   List<String> _searchSuggestions = [];
   bool _hasActiveSearch = false;
@@ -46,15 +53,20 @@ class ZenPlayController extends ChangeNotifier {
 
   VideoItem? _activeVideo;
   bool _isWatchExpanded = false;
-  YoutubePlayerController? _ytController;
-  StreamSubscription<YoutubeVideoState>? _ytStateSub;
+  VideoPlayerController? _videoController;
+  VideoPlayerController? _audioController;
+  Map<String, StreamTrackOption> _qualityStreams = const {};
   List<String> _availableQualities = const ['Auto'];
   List<SponsorSegment> _activeSponsorSegments = const [];
   final List<LiveChatMessage> _liveChatMessages = [];
   bool _isPlaying = false;
-  double _playbackProgress = 0.0;
+  bool _isLooping = false;
+  bool _isMuted = false;
+  int _volume = 100;
+  final ValueNotifier<double> playbackProgressNotifier = ValueNotifier<double>(0.0);
   double _playbackSpeed = 1.0;
   String _selectedQuality = 'Auto';
+  bool _handledEndForCurrent = false;
 
   bool _sponsorBlockEnabled = true;
   bool _deArrowEnabled = true;
@@ -69,11 +81,9 @@ class ZenPlayController extends ChangeNotifier {
   final Map<String, String> _downloadedFilePaths = {};
   final Map<String, double> _downloadProgress = {};
   final List<String> _watchHistoryIds = [];
-  final Map<String, Set<String>> _savedFolders = {
-    'Watch Later': {},
-    'Music': {},
-    'Tech': {},
-  };
+  final List<VideoItem> _playQueue = [];
+  final List<String> _interestQueries = [];
+  final Map<String, Set<String>> _savedFolders = {};
   final List<String> _recentSearches = ['Latest songs', 'Flutter Material 3', 'Lofi focus'];
 
   ThemeMode get themeMode => _themeMode;
@@ -88,12 +98,15 @@ class ZenPlayController extends ChangeNotifier {
   bool get hasMoreComments => _commentsNextToken != null;
   VideoItem? get activeVideo => _activeVideo;
   bool get isWatchExpanded => _isWatchExpanded;
-  YoutubePlayerController? get youtubeController => _ytController;
+  VideoPlayerController? get videoController => _videoController;
+  bool get isLooping => _isLooping;
+  bool get isMuted => _isMuted;
+  int get volume => _volume;
   List<String> get availableQualities => List.unmodifiable(_availableQualities);
   List<SponsorSegment> get activeSponsorSegments => _activeSponsorSegments;
   List<LiveChatMessage> get liveChatMessages => List.unmodifiable(_liveChatMessages);
   bool get isPlaying => _isPlaying;
-  double get playbackProgress => _playbackProgress;
+  double get playbackProgress => playbackProgressNotifier.value;
   double get playbackSpeed => _playbackSpeed;
   String get selectedQuality => _selectedQuality;
 
@@ -103,8 +116,10 @@ class ZenPlayController extends ChangeNotifier {
   bool get backgroundPlayEnabled => _backgroundPlayEnabled;
   bool get autoPlayEnabled => _autoPlayEnabled;
   bool get hideShortsEnabled => _hideShortsEnabled;
+  int? get sleepTimerMinutes => _sleepTimerMinutes;
 
   List<String> get recentSearches => List.unmodifiable(_recentSearches);
+  List<VideoItem> get playQueue => List.unmodifiable(_playQueue);
   List<String> get searchSuggestions => List.unmodifiable(_searchSuggestions);
   bool get hasActiveSearch => _hasActiveSearch;
 
@@ -120,6 +135,9 @@ class ZenPlayController extends ChangeNotifier {
   List<VideoItem> get _allKnownVideos {
     final byId = <String, VideoItem>{};
     for (final v in VideoRepository.videos) {
+      byId[v.id] = v;
+    }
+    for (final v in _persistedVideos.values) {
       byId[v.id] = v;
     }
     for (final v in _feedVideos) {
@@ -148,8 +166,15 @@ class ZenPlayController extends ChangeNotifier {
   }
 
   List<VideoItem> upNextFor(VideoItem current) {
-    final source = _feedVideos.isNotEmpty ? _feedVideos : _allKnownVideos;
-    return source.where((v) => v.id != current.id).toList();
+    final queued = _playQueue.where((v) => v.id != current.id).toList();
+    final related = _relatedVideos.isNotEmpty
+        ? _relatedVideos.where((v) => v.id != current.id).toList()
+        : (_feedVideos.isNotEmpty ? _feedVideos : _allKnownVideos)
+            .where((v) => v.id != current.id)
+            .toList();
+    if (queued.isEmpty) return related;
+    final queuedIds = queued.map((v) => v.id).toSet();
+    return [...queued, ...related.where((v) => !queuedIds.contains(v.id))];
   }
 
   List<VideoItem> searchVideos(String query) {
@@ -190,6 +215,7 @@ class ZenPlayController extends ChangeNotifier {
     _isAppInitializing = true;
     notifyListeners();
     try {
+      await _loadPersistedState();
       await loadFeed();
       if (_feedVideos.isEmpty) {
         _feedVideos = List.of(VideoRepository.videos);
@@ -197,6 +223,231 @@ class ZenPlayController extends ChangeNotifier {
     } finally {
       _isAppInitializing = false;
       notifyListeners();
+    }
+  }
+
+  Future<void> _loadPersistedState() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final themeIdx = prefs.getInt('themeMode');
+      if (themeIdx != null && themeIdx >= 0 && themeIdx < ThemeMode.values.length) {
+        _themeMode = ThemeMode.values[themeIdx];
+      }
+      _selectedQuality = prefs.getString('selectedQuality') ?? _selectedQuality;
+      _playbackSpeed = prefs.getDouble('playbackSpeed') ?? _playbackSpeed;
+      _backgroundPlayEnabled =
+          prefs.getBool('backgroundPlayEnabled') ?? _backgroundPlayEnabled;
+      _autoPlayEnabled = prefs.getBool('autoPlayEnabled') ?? _autoPlayEnabled;
+      _sponsorBlockEnabled =
+          prefs.getBool('sponsorBlockEnabled') ?? _sponsorBlockEnabled;
+      _returnDislikeEnabled =
+          prefs.getBool('returnDislikeEnabled') ?? _returnDislikeEnabled;
+
+      final searches = prefs.getStringList('recentSearches');
+      if (searches != null) {
+        _recentSearches
+          ..clear()
+          ..addAll(searches);
+      }
+
+      final history = prefs.getStringList('watchHistoryIds');
+      if (history != null) {
+        _watchHistoryIds
+          ..clear()
+          ..addAll(history.take(10));
+      }
+
+      final foldersRaw = prefs.getString('savedFolders');
+      if (foldersRaw != null) {
+        final decoded = jsonDecode(foldersRaw) as Map<String, dynamic>;
+        _savedFolders.clear();
+        for (final entry in decoded.entries) {
+          final list = (entry.value as List).whereType<String>().toSet();
+          _savedFolders[entry.key] = list;
+        }
+      }
+
+      final downloadsRaw = prefs.getString('downloadedQualities');
+      if (downloadsRaw != null) {
+        final decoded = jsonDecode(downloadsRaw) as Map<String, dynamic>;
+        _downloadedQualities
+          ..clear()
+          ..addAll(decoded.map((k, v) => MapEntry(k, '$v')));
+      }
+
+      final pathsRaw = prefs.getString('downloadedFilePaths');
+      if (pathsRaw != null) {
+        final decoded = jsonDecode(pathsRaw) as Map<String, dynamic>;
+        _downloadedFilePaths
+          ..clear()
+          ..addAll(decoded.map((k, v) => MapEntry(k, '$v')));
+      }
+
+      final videosRaw = prefs.getString('persistedVideos');
+      if (videosRaw != null) {
+        final decoded = jsonDecode(videosRaw) as Map<String, dynamic>;
+        for (final entry in decoded.entries) {
+          if (entry.value is Map<String, dynamic>) {
+            _persistedVideos[entry.key] =
+                VideoItem.fromJson(entry.value as Map<String, dynamic>);
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _savePersistedState() async {
+    if (!enableRemoteFetch) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt('themeMode', _themeMode.index);
+      await prefs.setString('selectedQuality', _selectedQuality);
+      await prefs.setDouble('playbackSpeed', _playbackSpeed);
+      await prefs.setBool('backgroundPlayEnabled', _backgroundPlayEnabled);
+      await prefs.setBool('autoPlayEnabled', _autoPlayEnabled);
+      await prefs.setBool('sponsorBlockEnabled', _sponsorBlockEnabled);
+      await prefs.setBool('returnDislikeEnabled', _returnDislikeEnabled);
+      await prefs.setStringList('recentSearches', _recentSearches);
+      await prefs.setStringList('watchHistoryIds', _watchHistoryIds);
+
+      final foldersMap = {
+        for (final e in _savedFolders.entries) e.key: e.value.toList(),
+      };
+      await prefs.setString('savedFolders', jsonEncode(foldersMap));
+      await prefs.setString(
+        'downloadedQualities',
+        jsonEncode(_downloadedQualities),
+      );
+      await prefs.setString(
+        'downloadedFilePaths',
+        jsonEncode(_downloadedFilePaths),
+      );
+
+      final neededIds = <String>{
+        ..._watchHistoryIds,
+        ..._downloadedQualities.keys,
+        for (final ids in _savedFolders.values) ...ids,
+      };
+      final allMap = {for (final v in _allKnownVideos) v.id: v};
+      final toStore = <String, dynamic>{};
+      for (final id in neededIds) {
+        final v = allMap[id];
+        if (v != null) {
+          _persistedVideos[id] = v;
+          toStore[id] = v.toJson();
+        }
+      }
+      await prefs.setString('persistedVideos', jsonEncode(toStore));
+    } catch (_) {}
+  }
+
+  Future<VideoItem?> openVideoUrlIfValid(String input) async {
+    final videoId = _repository.extractVideoId(input);
+    if (videoId == null) return null;
+    if (!enableRemoteFetch) return null;
+    return _repository.fetchVideoById(videoId);
+  }
+
+  void setSleepTimer(int? minutes) {
+    _sleepTimer?.cancel();
+    _sleepTimer = null;
+    _sleepTimerMinutes = minutes;
+    if (minutes != null && minutes > 0) {
+      _sleepTimer = Timer(Duration(minutes: minutes), () {
+        _sleepTimerMinutes = null;
+        if (_isPlaying) {
+          _isPlaying = false;
+          _videoController?.pause();
+        }
+        notifyListeners();
+      });
+    }
+    notifyListeners();
+  }
+
+  void addToQueue(VideoItem video) {
+    if (_playQueue.any((v) => v.id == video.id)) return;
+    _playQueue.add(video);
+    notifyListeners();
+  }
+
+  void playNextVideo() {
+    if (_playQueue.isNotEmpty) {
+      final next = _playQueue.removeAt(0);
+      playVideo(next);
+      return;
+    }
+    final current = _activeVideo;
+    if (current == null) return;
+    final nextList = upNextFor(current);
+    if (nextList.isNotEmpty) {
+      playVideo(nextList.first);
+    }
+  }
+
+  String exportBackupJson() {
+    final neededIds = <String>{
+      for (final ids in _savedFolders.values) ...ids,
+    };
+    final allMap = {for (final v in _allKnownVideos) v.id: v};
+    final videos = <String, dynamic>{};
+    for (final id in neededIds) {
+      final v = allMap[id];
+      if (v != null) videos[id] = v.toJson();
+    }
+    return jsonEncode({
+      'themeMode': _themeMode.index,
+      'selectedQuality': _selectedQuality,
+      'playbackSpeed': _playbackSpeed,
+      'backgroundPlayEnabled': _backgroundPlayEnabled,
+      'autoPlayEnabled': _autoPlayEnabled,
+      'sponsorBlockEnabled': _sponsorBlockEnabled,
+      'returnDislikeEnabled': _returnDislikeEnabled,
+      'savedFolders': {
+        for (final e in _savedFolders.entries) e.key: e.value.toList(),
+      },
+      'videos': videos,
+    });
+  }
+
+  bool importBackupJson(String raw) {
+    try {
+      final data = jsonDecode(raw) as Map<String, dynamic>;
+      final themeIdx = data['themeMode'] as int?;
+      if (themeIdx != null && themeIdx >= 0 && themeIdx < ThemeMode.values.length) {
+        _themeMode = ThemeMode.values[themeIdx];
+      }
+      _selectedQuality = (data['selectedQuality'] as String?) ?? _selectedQuality;
+      _playbackSpeed = (data['playbackSpeed'] as num?)?.toDouble() ?? _playbackSpeed;
+      _backgroundPlayEnabled =
+          (data['backgroundPlayEnabled'] as bool?) ?? _backgroundPlayEnabled;
+      _autoPlayEnabled = (data['autoPlayEnabled'] as bool?) ?? _autoPlayEnabled;
+      _sponsorBlockEnabled =
+          (data['sponsorBlockEnabled'] as bool?) ?? _sponsorBlockEnabled;
+      _returnDislikeEnabled =
+          (data['returnDislikeEnabled'] as bool?) ?? _returnDislikeEnabled;
+
+      final folders = data['savedFolders'] as Map<String, dynamic>?;
+      if (folders != null) {
+        _savedFolders.clear();
+        for (final e in folders.entries) {
+          _savedFolders[e.key] = (e.value as List).whereType<String>().toSet();
+        }
+      }
+      final videos = data['videos'] as Map<String, dynamic>?;
+      if (videos != null) {
+        for (final e in videos.entries) {
+          if (e.value is Map<String, dynamic>) {
+            _persistedVideos[e.key] =
+                VideoItem.fromJson(e.value as Map<String, dynamic>);
+          }
+        }
+      }
+      _savePersistedState();
+      notifyListeners();
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -212,7 +463,7 @@ class ZenPlayController extends ChangeNotifier {
     _isLoadingFeed = true;
     notifyListeners();
     try {
-      final remote = await _youtube.fetchFeed(target, page: _feedPage);
+      final remote = await _fetchPersonalizedOrCategory(target, _feedPage);
       if (remote.isNotEmpty) {
         final shuffled = List.of(remote)..shuffle();
         _feedVideos = shuffled;
@@ -229,13 +480,35 @@ class ZenPlayController extends ChangeNotifier {
     }
   }
 
+  Future<List<VideoItem>> _fetchPersonalizedOrCategory(
+    String category,
+    int page,
+  ) async {
+    if (category == 'All' && _interestQueries.isNotEmpty) {
+      final query = _interestQueries[page % _interestQueries.length];
+      final results = await _repository.searchVideos(query, category: 'All');
+      if (results.isNotEmpty) return results;
+    }
+    return _repository.fetchFeed(category, page: page);
+  }
+
+  void _recordInterest(String query) {
+    final cleaned = query.trim();
+    if (cleaned.isEmpty) return;
+    _interestQueries.remove(cleaned);
+    _interestQueries.insert(0, cleaned);
+    if (_interestQueries.length > 12) {
+      _interestQueries.removeLast();
+    }
+  }
+
   Future<void> refreshFeedInBackground() async {
     if (!enableRemoteFetch || _isLoadingFeed || _isLoadingMoreFeed) return;
     try {
       _refreshCycle += 1;
-      final remote = await _youtube.fetchFeed(
+      final remote = await _fetchPersonalizedOrCategory(
         _selectedCategory,
-        page: _refreshCycle,
+        _refreshCycle,
       );
       if (remote.isEmpty) return;
       final existingIds = _feedVideos.map((v) => v.id).toSet();
@@ -253,7 +526,10 @@ class ZenPlayController extends ChangeNotifier {
     notifyListeners();
     try {
       _feedPage += 1;
-      final more = await _youtube.fetchFeed(_selectedCategory, page: _feedPage);
+      final more = await _fetchPersonalizedOrCategory(
+        _selectedCategory,
+        _feedPage,
+      );
       final existingIds = _feedVideos.map((v) => v.id).toSet();
       final unique = more.where((v) => !existingIds.contains(v.id)).toList();
       if (unique.isNotEmpty) {
@@ -266,9 +542,22 @@ class ZenPlayController extends ChangeNotifier {
     }
   }
 
+  Future<ChannelProfileData> fetchChannelProfile(ChannelInfo channel) async {
+    if (!enableRemoteFetch) {
+      return ChannelProfileData(
+        subscriberCount: channel.subscriberCount,
+        avatarUrl: channel.avatarUrl,
+        uploads: VideoRepository.videos
+            .where((v) => v.channel.id == channel.id)
+            .toList(),
+      );
+    }
+    return _repository.fetchChannelProfile(channel.id, channel.name);
+  }
+
   Future<String?> fetchChannelSubscribers(String channelId) {
     if (!enableRemoteFetch) return Future.value(null);
-    return _youtube.fetchChannelSubscribers(channelId);
+    return _repository.fetchChannelSubscribers(channelId);
   }
 
   Future<List<VideoItem>> fetchChannelUploads(String channelId) async {
@@ -278,8 +567,8 @@ class ZenPlayController extends ChangeNotifier {
           .toList();
     }
     try {
-      final uploads = await _youtube.fetchChannelVideos(channelId);
-      if (uploads.isNotEmpty) return uploads;
+      final profile = await _repository.fetchChannelProfile(channelId, '');
+      if (profile.uploads.isNotEmpty) return profile.uploads;
     } catch (_) {}
     return _allKnownVideos.where((v) => v.channel.id == channelId).toList();
   }
@@ -293,7 +582,7 @@ class ZenPlayController extends ChangeNotifier {
       return;
     }
     if (!enableRemoteFetch) return;
-    final suggestions = await _youtube.fetchSearchSuggestions(cleaned);
+    final suggestions = await _repository.fetchSearchSuggestions(cleaned);
     _searchSuggestions = suggestions;
     notifyListeners();
   }
@@ -313,7 +602,7 @@ class ZenPlayController extends ChangeNotifier {
     _isLoadingSearch = true;
     notifyListeners();
     try {
-      _searchResults = await _youtube.searchVideos(cleaned);
+      _searchResults = await _repository.searchVideos(cleaned);
     } catch (_) {
       _searchResults = [];
     } finally {
@@ -337,6 +626,7 @@ class ZenPlayController extends ChangeNotifier {
 
   void setThemeMode(ThemeMode mode) {
     _themeMode = mode;
+    _savePersistedState();
     notifyListeners();
   }
 
@@ -355,21 +645,36 @@ class ZenPlayController extends ChangeNotifier {
   Future<void> playVideo(VideoItem video) async {
     _activeVideo = video;
     _isWatchExpanded = true;
+    _relatedVideos = [];
+    _qualityStreams = const {};
     _availableQualities = const ['Auto'];
     _activeSponsorSegments = const [];
     _commentsNextToken = null;
     _isLoadingMoreComments = false;
+    _handledEndForCurrent = false;
     _seedLiveChat(video);
     _isPlaying = true;
-    _playbackProgress = 0.0;
+    playbackProgressNotifier.value = 0.0;
+    _recordInterest(video.channel.name);
+    final words = video.title
+        .split(RegExp(r'\s+'))
+        .where((w) => w.length > 3)
+        .take(3)
+        .join(' ');
+    if (words.isNotEmpty) _recordInterest(words);
     _watchHistoryIds.remove(video.id);
     _watchHistoryIds.insert(0, video.id);
     if (_watchHistoryIds.length > 10) {
       _watchHistoryIds.removeRange(10, _watchHistoryIds.length);
     }
+    _persistedVideos[video.id] = video;
+    _savePersistedState();
 
-    if (enableRemoteFetch) {
-      _ensureYoutubeController(video);
+    final localPath = _downloadedFilePaths[video.id];
+    if (localPath != null && File(localPath).existsSync()) {
+      await _initVideoController(filePath: localPath);
+    } else {
+      await _disposeVideoController();
     }
 
     if (!enableRemoteFetch) {
@@ -381,15 +686,17 @@ class ZenPlayController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final details = await _youtube.resolvePlaybackDetails(
+      final details = await _repository.resolvePlaybackDetails(
         video.id,
         channelId: video.channel.id,
         isLiveHint: video.isLive,
       );
       if (_activeVideo?.id != video.id) return;
       _availableQualities = details.availableQualities;
+      _qualityStreams = details.qualityStreams;
       _activeSponsorSegments = details.sponsorSegments;
       _commentsNextToken = details.commentsNextToken;
+      _relatedVideos = details.relatedVideos;
       if (details.liveChatMessages.isNotEmpty) {
         _liveChatMessages
           ..clear()
@@ -411,9 +718,62 @@ class ZenPlayController extends ChangeNotifier {
         hasSponsorBlock: details.sponsorSegments.isNotEmpty || video.hasSponsorBlock,
         comments: details.comments.isNotEmpty ? details.comments : video.comments,
       );
+
+      if (_videoController == null) {
+        final chosenTrack = _qualityStreams[_selectedQuality] ??
+            _qualityStreams['Auto'] ??
+            (details.streamUrl != null
+                ? StreamTrackOption(videoUrl: details.streamUrl!)
+                : null);
+        if (chosenTrack != null && chosenTrack.videoUrl.isNotEmpty) {
+          await _initVideoController(
+            networkUrl: chosenTrack.videoUrl,
+            audioUrl: chosenTrack.audioUrl,
+          );
+        }
+      }
     } catch (_) {
     } finally {
       _isLoadingWatchDetails = false;
+      notifyListeners();
+    }
+  }
+
+  final Set<String> _loadingRepliesIds = {};
+  final Set<String> _expandedRepliesIds = {};
+
+  bool isRepliesExpanded(String commentId) =>
+      _expandedRepliesIds.contains(commentId);
+  bool isLoadingReplies(String commentId) =>
+      _loadingRepliesIds.contains(commentId);
+
+  Future<void> toggleCommentReplies(CommentItem comment) async {
+    if (_expandedRepliesIds.contains(comment.id)) {
+      _expandedRepliesIds.remove(comment.id);
+      notifyListeners();
+      return;
+    }
+
+    _expandedRepliesIds.add(comment.id);
+    if (comment.replies.isNotEmpty || comment.repliesToken == null) {
+      notifyListeners();
+      return;
+    }
+
+    _loadingRepliesIds.add(comment.id);
+    notifyListeners();
+    try {
+      final fetched = await _repository.fetchCommentReplies(comment.repliesToken!);
+      final video = _activeVideo;
+      if (video != null) {
+        final updated = video.comments
+            .map((c) => c.id == comment.id ? c.copyWith(replies: fetched) : c)
+            .toList();
+        _activeVideo = video.copyWith(comments: updated);
+      }
+    } catch (_) {
+    } finally {
+      _loadingRepliesIds.remove(comment.id);
       notifyListeners();
     }
   }
@@ -427,7 +787,7 @@ class ZenPlayController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final page = await _youtube.fetchMoreComments(token);
+      final page = await _repository.fetchMoreComments(token);
       if (_activeVideo?.id != video.id) return;
       _commentsNextToken = page.nextToken;
       if (page.comments.isNotEmpty) {
@@ -444,11 +804,13 @@ class ZenPlayController extends ChangeNotifier {
 
   void clearHistory() {
     _watchHistoryIds.clear();
+    _savePersistedState();
     notifyListeners();
   }
 
   void clearSearchHistory() {
     _recentSearches.clear();
+    _savePersistedState();
     notifyListeners();
   }
 
@@ -462,6 +824,7 @@ class ZenPlayController extends ChangeNotifier {
     _downloadedQualities.clear();
     _downloadedFilePaths.clear();
     _downloadProgress.clear();
+    _savePersistedState();
     notifyListeners();
   }
 
@@ -495,66 +858,203 @@ class ZenPlayController extends ChangeNotifier {
     notifyListeners();
   }
 
-  void _ensureYoutubeController(VideoItem video) {
-    if (_ytController == null) {
-      final next = YoutubePlayerController.fromVideoId(
-        videoId: video.id,
-        autoPlay: true,
-        params: const YoutubePlayerParams(
-          showFullscreenButton: true,
-          mute: false,
-        ),
-      );
-      _ytStateSub?.cancel();
-      _ytStateSub = next.videoStateStream.listen((state) {
-        final active = _activeVideo;
-        if (active == null) return;
-        final posSec = state.position.inMilliseconds / 1000.0;
-        if (active.durationSeconds > 0) {
-          _playbackProgress = (posSec / active.durationSeconds).clamp(0.0, 1.0);
-          notifyListeners();
-        }
-        if (_sponsorBlockEnabled) {
-          for (final seg in _activeSponsorSegments) {
-            if (posSec >= seg.startSeconds && posSec < seg.endSeconds - 0.5) {
-              next.seekTo(seconds: seg.endSeconds, allowSeekAhead: true);
-              break;
-            }
-          }
-        }
-      });
-      _ytController = next;
-      next.webViewController.runJavaScript(
-        "Object.defineProperty(document,'hidden',{get:()=>false});"
-        "Object.defineProperty(document,'visibilityState',{get:()=>'visible'});",
-      );
-    } else {
-      _ytController!.loadVideoById(videoId: video.id);
+  Future<void> _disposeVideoController() async {
+    final oldVideo = _videoController;
+    final oldAudio = _audioController;
+    _videoController = null;
+    _audioController = null;
+    if (oldVideo != null) {
+      oldVideo.removeListener(_onVideoTick);
+      await oldVideo.dispose();
     }
-    _ytController?.setPlaybackRate(_playbackSpeed);
+    if (oldAudio != null) {
+      await oldAudio.dispose();
+    }
+  }
+
+  Future<void> _initVideoController({
+    String? networkUrl,
+    String? audioUrl,
+    String? filePath,
+    Duration? startAt,
+  }) async {
+    await _disposeVideoController();
+    final options = VideoPlayerOptions(
+      allowBackgroundPlayback: _backgroundPlayEnabled,
+      mixWithOthers: audioUrl != null,
+    );
+    final nextVideo = filePath != null
+        ? VideoPlayerController.file(
+            File(filePath),
+            videoPlayerOptions: options,
+          )
+        : VideoPlayerController.networkUrl(
+            Uri.parse(networkUrl!),
+            videoPlayerOptions: options,
+          );
+    final nextAudio = audioUrl != null
+        ? VideoPlayerController.networkUrl(
+            Uri.parse(audioUrl),
+            videoPlayerOptions: options,
+          )
+        : null;
+
+    _videoController = nextVideo;
+    _audioController = nextAudio;
+    nextVideo.addListener(_onVideoTick);
+    notifyListeners();
+
+    try {
+      await Future.wait([
+        nextVideo.initialize(),
+        if (nextAudio != null) nextAudio.initialize(),
+      ]);
+      if (_videoController != nextVideo) return;
+      await nextVideo.setLooping(_isLooping);
+      await nextVideo.setPlaybackSpeed(_playbackSpeed);
+      await nextVideo.setVolume(
+        nextAudio != null ? 0.0 : (_isMuted ? 0.0 : _volume / 100.0),
+      );
+      if (nextAudio != null) {
+        await nextAudio.setLooping(_isLooping);
+        await nextAudio.setPlaybackSpeed(_playbackSpeed);
+        await nextAudio.setVolume(_isMuted ? 0.0 : _volume / 100.0);
+      }
+      if (startAt != null && startAt > Duration.zero) {
+        await Future.wait([
+          nextVideo.seekTo(startAt),
+          if (nextAudio != null) nextAudio.seekTo(startAt),
+        ]);
+      }
+      if (_isPlaying) {
+        await Future.wait([
+          nextVideo.play(),
+          if (nextAudio != null) nextAudio.play(),
+        ]);
+      }
+      notifyListeners();
+    } catch (_) {
+      notifyListeners();
+    }
+  }
+
+  void _onVideoTick() {
+    final player = _videoController;
+    if (player == null || !player.value.isInitialized) return;
+
+    final durationMs = player.value.duration.inMilliseconds;
+    final posMs = player.value.position.inMilliseconds;
+    if (durationMs > 0) {
+      playbackProgressNotifier.value = (posMs / durationMs).clamp(0.0, 1.0);
+    }
+
+    if (_sponsorBlockEnabled) {
+      final posSec = posMs / 1000.0;
+      for (final seg in _activeSponsorSegments) {
+        if (posSec >= seg.startSeconds && posSec < seg.endSeconds - 0.5) {
+          player.seekTo(Duration(milliseconds: (seg.endSeconds * 1000).round()));
+          break;
+        }
+      }
+    }
+
+    if (!_isLooping &&
+        durationMs > 0 &&
+        posMs >= durationMs - 300 &&
+        !player.value.isPlaying &&
+        !_handledEndForCurrent) {
+      _handledEndForCurrent = true;
+      if (_autoPlayEnabled) {
+        playNextVideo();
+      }
+    }
   }
 
   void togglePlayPause() {
     if (_activeVideo == null) return;
     _isPlaying = !_isPlaying;
     if (_isPlaying) {
-      _ytController?.playVideo();
+      _videoController?.play();
+      _audioController?.play();
     } else {
-      _ytController?.pauseVideo();
+      _videoController?.pause();
+      _audioController?.pause();
     }
     notifyListeners();
   }
 
-  void seekTo(double progress) {
-    _playbackProgress = progress.clamp(0.0, 1.0);
+  Future<void> seekTo(double progress) async {
+    final clamped = progress.clamp(0.0, 1.0);
+    playbackProgressNotifier.value = clamped;
+    final player = _videoController;
+    if (player != null && player.value.isInitialized) {
+      final target = Duration(
+        milliseconds: (player.value.duration.inMilliseconds * clamped).round(),
+      );
+      await Future.wait([
+        player.seekTo(target),
+        if (_audioController != null && _audioController!.value.isInitialized)
+          _audioController!.seekTo(target),
+      ]);
+    }
+  }
+
+  Future<void> seekBySeconds(int deltaSeconds) async {
+    final player = _videoController;
+    if (player != null && player.value.isInitialized) {
+      final target = player.value.position + Duration(seconds: deltaSeconds);
+      await Future.wait([
+        player.seekTo(target),
+        if (_audioController != null && _audioController!.value.isInitialized)
+          _audioController!.seekTo(target),
+      ]);
+    }
+  }
+
+  Future<void> seekToSeconds(int seconds) async {
+    final player = _videoController;
+    if (player != null && player.value.isInitialized) {
+      final target = Duration(seconds: seconds);
+      await Future.wait([
+        player.seekTo(target),
+        if (_audioController != null && _audioController!.value.isInitialized)
+          _audioController!.seekTo(target),
+      ]);
+    }
+  }
+
+  void toggleMute() {
+    _isMuted = !_isMuted;
+    final vol = _isMuted ? 0.0 : _volume / 100.0;
+    if (_audioController != null) {
+      _audioController!.setVolume(vol);
+    } else {
+      _videoController?.setVolume(vol);
+    }
+    notifyListeners();
+  }
+
+  void setVolumeLevel(int value) {
+    _volume = value.clamp(0, 100);
+    _isMuted = _volume == 0;
+    final vol = _volume / 100.0;
+    if (_audioController != null) {
+      _audioController!.setVolume(vol);
+    } else {
+      _videoController?.setVolume(vol);
+    }
+    notifyListeners();
+  }
+
+  void setLooping(bool value) {
+    _isLooping = value;
+    _videoController?.setLooping(value);
+    _audioController?.setLooping(value);
     notifyListeners();
   }
 
   void closeMiniPlayer() {
-    _ytStateSub?.cancel();
-    _ytStateSub = null;
-    _ytController?.close();
-    _ytController = null;
+    _disposeVideoController();
     _activeVideo = null;
     _isWatchExpanded = false;
     _activeSponsorSegments = const [];
@@ -564,20 +1064,40 @@ class ZenPlayController extends ChangeNotifier {
 
   void setPlaybackSpeed(double speed) {
     _playbackSpeed = speed;
-    _ytController?.setPlaybackRate(speed);
+    _videoController?.setPlaybackSpeed(speed);
+    _audioController?.setPlaybackSpeed(speed);
     notifyListeners();
   }
 
-  void setQuality(String quality) {
+  Future<void> setQuality(String quality) async {
     _selectedQuality = quality;
-    notifyListeners();
+    _savePersistedState();
+    final track = _qualityStreams[quality];
+    if (track != null && track.videoUrl.isNotEmpty && _activeVideo != null) {
+      final currentPos = _videoController?.value.position;
+      await _initVideoController(
+        networkUrl: track.videoUrl,
+        audioUrl: track.audioUrl,
+        startAt: currentPos,
+      );
+    } else {
+      notifyListeners();
+    }
   }
 
   void createFolder(String name) {
     final cleaned = name.trim();
     if (cleaned.isEmpty || _savedFolders.containsKey(cleaned)) return;
     _savedFolders[cleaned] = {};
+    _savePersistedState();
     notifyListeners();
+  }
+
+  void deleteFolder(String name) {
+    if (_savedFolders.remove(name) != null) {
+      _savePersistedState();
+      notifyListeners();
+    }
   }
 
   void toggleVideoInFolder(String folder, String videoId) {
@@ -587,6 +1107,7 @@ class ZenPlayController extends ChangeNotifier {
     } else {
       set.add(videoId);
     }
+    _savePersistedState();
     notifyListeners();
   }
 
@@ -626,7 +1147,7 @@ class ZenPlayController extends ChangeNotifier {
     }
 
     try {
-      final path = await _youtube.downloadVideoStream(
+      final path = await _repository.downloadVideoStream(
         video.id,
         quality,
         (progress) {
@@ -672,6 +1193,7 @@ class ZenPlayController extends ChangeNotifier {
   void addSearchQuery(String query) {
     final cleaned = query.trim();
     if (cleaned.isEmpty) return;
+    _recordInterest(cleaned);
     _recentSearches.remove(cleaned);
     _recentSearches.insert(0, cleaned);
     if (_recentSearches.length > 8) {
@@ -682,6 +1204,7 @@ class ZenPlayController extends ChangeNotifier {
 
   void setSponsorBlock(bool value) {
     _sponsorBlockEnabled = value;
+    _savePersistedState();
     notifyListeners();
   }
 
@@ -692,16 +1215,19 @@ class ZenPlayController extends ChangeNotifier {
 
   void setReturnDislike(bool value) {
     _returnDislikeEnabled = value;
+    _savePersistedState();
     notifyListeners();
   }
 
   void setBackgroundPlay(bool value) {
     _backgroundPlayEnabled = value;
+    _savePersistedState();
     notifyListeners();
   }
 
   void setAutoPlay(bool value) {
     _autoPlayEnabled = value;
+    _savePersistedState();
     notifyListeners();
   }
 
@@ -711,11 +1237,25 @@ class ZenPlayController extends ChangeNotifier {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused &&
+        _backgroundPlayEnabled &&
+        _isPlaying &&
+        _videoController != null &&
+        _videoController!.value.isInitialized) {
+      _videoController!.play();
+      _audioController?.play();
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _backgroundRefreshTimer?.cancel();
-    _ytStateSub?.cancel();
-    _ytController?.close();
-    _youtube.dispose();
+    _sleepTimer?.cancel();
+    _disposeVideoController();
+    playbackProgressNotifier.dispose();
+    _repository.dispose();
     super.dispose();
   }
 }

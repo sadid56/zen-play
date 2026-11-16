@@ -104,6 +104,14 @@ class _HomeScreenState extends State<HomeScreen> {
                                 ),
                                 onDownloadTap: () =>
                                     widget.controller.toggleDownload(video.id),
+                                onQueueTap: () {
+                                  widget.controller.addToQueue(video);
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('Added to Up Next queue'),
+                                    ),
+                                  );
+                                },
                               );
                             },
                           ),

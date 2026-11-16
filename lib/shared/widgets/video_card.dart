@@ -10,6 +10,7 @@ class VideoCard extends StatelessWidget {
     this.onChannelTap,
     this.onSaveTap,
     this.onDownloadTap,
+    this.onQueueTap,
     this.isSaved = false,
     this.isDownloaded = false,
     this.showDeArrowBadge = false,
@@ -21,6 +22,7 @@ class VideoCard extends StatelessWidget {
   final VoidCallback? onChannelTap;
   final VoidCallback? onSaveTap;
   final VoidCallback? onDownloadTap;
+  final VoidCallback? onQueueTap;
   final bool isSaved;
   final bool isDownloaded;
   final bool showDeArrowBadge;
@@ -85,8 +87,20 @@ class VideoCard extends StatelessWidget {
                     onSelected: (value) {
                       if (value == 'save') onSaveTap?.call();
                       if (value == 'download') onDownloadTap?.call();
+                      if (value == 'queue') onQueueTap?.call();
                     },
                     itemBuilder: (_) => [
+                      if (onQueueTap != null)
+                        const PopupMenuItem(
+                          value: 'queue',
+                          child: Row(
+                            children: [
+                              Icon(Icons.playlist_add_rounded),
+                              SizedBox(width: 12),
+                              Text('Add to queue'),
+                            ],
+                          ),
+                        ),
                       PopupMenuItem(
                         value: 'save',
                         child: Row(

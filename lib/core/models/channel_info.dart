@@ -32,6 +32,28 @@ class ChannelInfo {
     );
   }
 
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'handle': handle,
+        'subscriberCount': subscriberCount,
+        'avatarColorValue': avatarColorValue,
+        'avatarUrl': avatarUrl,
+        'isVerified': isVerified,
+      };
+
+  factory ChannelInfo.fromJson(Map<String, dynamic> json) {
+    return ChannelInfo(
+      id: (json['id'] as String?) ?? '',
+      name: (json['name'] as String?) ?? 'YouTube',
+      handle: (json['handle'] as String?) ?? '@youtube',
+      subscriberCount: (json['subscriberCount'] as String?) ?? 'YouTube channel',
+      avatarColorValue: (json['avatarColorValue'] as int?) ?? 0xFF1E2A78,
+      avatarUrl: json['avatarUrl'] as String?,
+      isVerified: (json['isVerified'] as bool?) ?? false,
+    );
+  }
+
   String get initials {
     final parts = name.trim().split(RegExp(r'\s+'));
     if (parts.isEmpty || parts.first.isEmpty) return 'Z';

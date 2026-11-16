@@ -33,6 +33,8 @@ class CommentItem {
     required this.likes,
     this.avatarUrl,
     this.replyCount = 0,
+    this.repliesToken,
+    this.replies = const [],
   });
 
   final String id;
@@ -42,6 +44,22 @@ class CommentItem {
   final String likes;
   final String? avatarUrl;
   final int replyCount;
+  final String? repliesToken;
+  final List<CommentItem> replies;
+
+  CommentItem copyWith({List<CommentItem>? replies}) {
+    return CommentItem(
+      id: id,
+      author: author,
+      text: text,
+      publishedAgo: publishedAgo,
+      likes: likes,
+      avatarUrl: avatarUrl,
+      replyCount: replyCount,
+      repliesToken: repliesToken,
+      replies: replies ?? this.replies,
+    );
+  }
 }
 
 class LiveChatMessage {
@@ -129,6 +147,46 @@ class VideoItem {
       hasDeArrowTitle: hasDeArrowTitle,
       chapters: chapters,
       comments: comments ?? this.comments,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'title': title,
+        'channel': channel.toJson(),
+        'duration': duration,
+        'durationSeconds': durationSeconds,
+        'viewsText': viewsText,
+        'publishedAgo': publishedAgo,
+        'category': category,
+        'description': description,
+        'likesCount': likesCount,
+        'dislikesCount': dislikesCount,
+        'accentColorValue': accentColorValue,
+        'thumbnailUrl': thumbnailUrl,
+        'totalCommentsCount': totalCommentsCount,
+        'isLive': isLive,
+      };
+
+  factory VideoItem.fromJson(Map<String, dynamic> json) {
+    return VideoItem(
+      id: (json['id'] as String?) ?? '',
+      title: (json['title'] as String?) ?? '',
+      channel: ChannelInfo.fromJson(
+        (json['channel'] as Map<String, dynamic>?) ?? const {},
+      ),
+      duration: (json['duration'] as String?) ?? '0:00',
+      durationSeconds: (json['durationSeconds'] as int?) ?? 0,
+      viewsText: (json['viewsText'] as String?) ?? '',
+      publishedAgo: (json['publishedAgo'] as String?) ?? '',
+      category: (json['category'] as String?) ?? 'All',
+      description: (json['description'] as String?) ?? '',
+      likesCount: (json['likesCount'] as String?) ?? '—',
+      dislikesCount: (json['dislikesCount'] as String?) ?? '—',
+      accentColorValue: (json['accentColorValue'] as int?) ?? 0xFF1E2A78,
+      thumbnailUrl: json['thumbnailUrl'] as String?,
+      totalCommentsCount: json['totalCommentsCount'] as String?,
+      isLive: (json['isLive'] as bool?) ?? false,
     );
   }
 }

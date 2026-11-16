@@ -18,7 +18,7 @@ void main() {
     await tester.tap(find.text('Saved'));
     await tester.pumpAndSettle();
     expect(find.text('Saved Collections'), findsOneWidget);
-    expect(find.text('Watch Later'), findsOneWidget);
+    expect(find.text('No saved folders yet'), findsOneWidget);
 
     await tester.tap(find.text('Downloads'));
     await tester.pumpAndSettle();

@@ -42,15 +42,22 @@ class _SearchScreenState extends State<SearchScreen> {
     });
   }
 
-  void _runSearch(String query) {
+  Future<void> _runSearch(String query) async {
     _debounce?.cancel();
     _textController.text = query;
     _textController.selection = TextSelection.fromPosition(
       TextPosition(offset: query.length),
     );
     FocusScope.of(context).unfocus();
+
+    final directVideo = await widget.controller.openVideoUrlIfValid(query);
+    if (directVideo != null && mounted) {
+      widget.onOpenVideo(directVideo);
+      return;
+    }
+
     widget.controller.performSearch(query);
-    setState(() {});
+    if (mounted) setState(() {});
   }
 
   @override

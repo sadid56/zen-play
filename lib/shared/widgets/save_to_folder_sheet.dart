@@ -29,23 +29,30 @@ Future<void> showSaveToFolderSheet(
                   ),
                 ),
                 const Divider(height: 1),
-                Flexible(
-                  child: ListView.builder(
-                    shrinkWrap: true,
-                    itemCount: folders.length,
-                    itemBuilder: (_, index) {
-                      final folder = folders[index];
-                      final checked = controller.isSavedInFolder(folder, videoId);
-                      return CheckboxListTile(
-                        value: checked,
-                        title: Text(folder),
-                        secondary: const Icon(Icons.folder_outlined),
-                        onChanged: (_) =>
-                            controller.toggleVideoInFolder(folder, videoId),
-                      );
-                    },
+                if (folders.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.all(24),
+                    child: Text('No folders yet. Tap "New folder" above to create one.'),
+                  )
+                else
+                  Flexible(
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: folders.length,
+                      itemBuilder: (_, index) {
+                        final folder = folders[index];
+                        final checked =
+                            controller.isSavedInFolder(folder, videoId);
+                        return CheckboxListTile(
+                          value: checked,
+                          title: Text(folder),
+                          secondary: const Icon(Icons.folder_outlined),
+                          onChanged: (_) =>
+                              controller.toggleVideoInFolder(folder, videoId),
+                        );
+                      },
+                    ),
                   ),
-                ),
               ],
             ),
           );
