@@ -74,7 +74,8 @@ class _HomeScreenState extends State<HomeScreen> {
                           subtitle: 'Try selecting another topic above.',
                         )
                       : RefreshIndicator(
-                          onRefresh: () => widget.controller.loadFeed(),
+                          onRefresh: () =>
+                              widget.controller.loadFeed(isRefresh: true),
                           child: ListView.builder(
                             controller: _scrollController,
                             padding: const EdgeInsets.only(bottom: 16),

@@ -47,26 +47,11 @@ class _ZenPlayShellState extends State<ZenPlayShell> {
 
   void _openWatch(BuildContext context, VideoItem video) {
     widget.controller.playVideo(video);
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => WatchScreen(
-          controller: widget.controller,
-          onOpenChannel: (channel) => _openChannel(context, channel),
-        ),
-      ),
-    );
+    Navigator.of(context).popUntil((route) => route.isFirst);
   }
 
   void _openActiveWatch(BuildContext context) {
-    if (widget.controller.activeVideo == null) return;
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => WatchScreen(
-          controller: widget.controller,
-          onOpenChannel: (channel) => _openChannel(context, channel),
-        ),
-      ),
-    );
+    widget.controller.expandWatch();
   }
 
   void _openChannel(BuildContext context, ChannelInfo channel) {
@@ -107,101 +92,131 @@ class _ZenPlayShellState extends State<ZenPlayShell> {
       listenable: widget.controller,
       builder: (context, _) {
         final activeVideo = widget.controller.activeVideo;
-        final isInitialLoading =
-            widget.controller.isAppInitializing || widget.controller.isLoadingFeed;
+        final isWatchExpanded =
+            activeVideo != null && widget.controller.isWatchExpanded;
 
-        return Scaffold(
-          appBar: AppBar(
-            title: const Row(
-              children: [
-                ZenPlayLogo(size: 30),
-                SizedBox(width: 10),
-                Text('ZenPlay', style: TextStyle(fontWeight: FontWeight.w700)),
-              ],
-            ),
-            actions: [
-              IconButton(
-                onPressed: () => _openSearch(context),
-                icon: const Icon(Icons.search_rounded),
-                tooltip: 'Search',
-              ),
-              IconButton(
-                onPressed: () => _openSettings(context),
-                icon: const Icon(Icons.settings_outlined),
-                tooltip: 'Settings',
-              ),
-            ],
-            bottom: isInitialLoading
-                ? const PreferredSize(
-                    preferredSize: Size.fromHeight(3),
-                    child: LinearProgressIndicator(minHeight: 3),
-                  )
-                : null,
-          ),
-          body: PageView(
-            controller: _pageController,
-            onPageChanged: widget.controller.setNavIndex,
+        return PopScope(
+          canPop: !isWatchExpanded,
+          onPopInvokedWithResult: (didPop, _) {
+            if (!didPop && isWatchExpanded) {
+              widget.controller.minimizeWatch();
+            }
+          },
+          child: Stack(
             children: [
-              HomeScreen(
-                controller: widget.controller,
-                onOpenVideo: (video) => _openWatch(context, video),
-                onOpenChannel: (channel) => _openChannel(context, channel),
-              ),
-              HistoryScreen(
-                controller: widget.controller,
-                onOpenVideo: (video) => _openWatch(context, video),
-                onOpenChannel: (channel) => _openChannel(context, channel),
-              ),
-              SavedScreen(
-                controller: widget.controller,
-                onOpenVideo: (video) => _openWatch(context, video),
-                onOpenChannel: (channel) => _openChannel(context, channel),
-              ),
-              DownloadsScreen(
-                controller: widget.controller,
-                onOpenVideo: (video) => _openWatch(context, video),
-                onOpenChannel: (channel) => _openChannel(context, channel),
-              ),
-            ],
-          ),
-          bottomNavigationBar: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (activeVideo != null)
-                MiniPlayerBar(
-                  video: activeVideo,
-                  isPlaying: widget.controller.isPlaying,
-                  progress: widget.controller.playbackProgress,
-                  onTap: () => _openActiveWatch(context),
-                  onTogglePlay: widget.controller.togglePlayPause,
-                  onClose: widget.controller.closeMiniPlayer,
+              Scaffold(
+                appBar: AppBar(
+                  title: const Row(
+                    children: [
+                      ZenPlayLogo(size: 30),
+                      SizedBox(width: 10),
+                      Text(
+                        'ZenPlay',
+                        style: TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                    ],
+                  ),
+                  actions: [
+                    IconButton(
+                      onPressed: () => _openSearch(context),
+                      icon: const Icon(Icons.search_rounded),
+                      tooltip: 'Search',
+                    ),
+                    IconButton(
+                      onPressed: () => _openSettings(context),
+                      icon: const Icon(Icons.settings_outlined),
+                      tooltip: 'Settings',
+                    ),
+                  ],
                 ),
-              NavigationBar(
-                selectedIndex: widget.controller.navIndex,
-                onDestinationSelected: _onDestinationSelected,
-                destinations: const [
-                  NavigationDestination(
-                    icon: Icon(Icons.home_outlined),
-                    selectedIcon: Icon(Icons.home_rounded),
-                    label: 'Home',
-                  ),
-                  NavigationDestination(
-                    icon: Icon(Icons.history_outlined),
-                    selectedIcon: Icon(Icons.history_rounded),
-                    label: 'History',
-                  ),
-                  NavigationDestination(
-                    icon: Icon(Icons.folder_outlined),
-                    selectedIcon: Icon(Icons.folder_rounded),
-                    label: 'Saved',
-                  ),
-                  NavigationDestination(
-                    icon: Icon(Icons.download_outlined),
-                    selectedIcon: Icon(Icons.download_rounded),
-                    label: 'Downloads',
-                  ),
-                ],
+                body: PageView(
+                  controller: _pageController,
+                  onPageChanged: widget.controller.setNavIndex,
+                  children: [
+                    HomeScreen(
+                      controller: widget.controller,
+                      onOpenVideo: (video) => _openWatch(context, video),
+                      onOpenChannel: (channel) =>
+                          _openChannel(context, channel),
+                    ),
+                    HistoryScreen(
+                      controller: widget.controller,
+                      onOpenVideo: (video) => _openWatch(context, video),
+                      onOpenChannel: (channel) =>
+                          _openChannel(context, channel),
+                    ),
+                    SavedScreen(
+                      controller: widget.controller,
+                      onOpenVideo: (video) => _openWatch(context, video),
+                      onOpenChannel: (channel) =>
+                          _openChannel(context, channel),
+                    ),
+                    DownloadsScreen(
+                      controller: widget.controller,
+                      onOpenVideo: (video) => _openWatch(context, video),
+                      onOpenChannel: (channel) =>
+                          _openChannel(context, channel),
+                    ),
+                  ],
+                ),
+                bottomNavigationBar: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (activeVideo != null && !isWatchExpanded)
+                      MiniPlayerBar(
+                        video: activeVideo,
+                        isPlaying: widget.controller.isPlaying,
+                        progress: widget.controller.playbackProgress,
+                        onTap: () => _openActiveWatch(context),
+                        onTogglePlay: widget.controller.togglePlayPause,
+                        onClose: widget.controller.closeMiniPlayer,
+                      ),
+                    NavigationBar(
+                      selectedIndex: widget.controller.navIndex,
+                      onDestinationSelected: _onDestinationSelected,
+                      destinations: const [
+                        NavigationDestination(
+                          icon: Icon(Icons.home_outlined),
+                          selectedIcon: Icon(Icons.home_rounded),
+                          label: 'Home',
+                        ),
+                        NavigationDestination(
+                          icon: Icon(Icons.history_outlined),
+                          selectedIcon: Icon(Icons.history_rounded),
+                          label: 'History',
+                        ),
+                        NavigationDestination(
+                          icon: Icon(Icons.folder_outlined),
+                          selectedIcon: Icon(Icons.folder_rounded),
+                          label: 'Saved',
+                        ),
+                        NavigationDestination(
+                          icon: Icon(Icons.download_outlined),
+                          selectedIcon: Icon(Icons.download_rounded),
+                          label: 'Downloads',
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
+              if (activeVideo != null)
+                Positioned(
+                  left: 0,
+                  right: isWatchExpanded ? 0 : null,
+                  top: isWatchExpanded ? 0 : null,
+                  bottom: 0,
+                  width: isWatchExpanded ? null : 1,
+                  height: isWatchExpanded ? null : 1,
+                  child: IgnorePointer(
+                    ignoring: !isWatchExpanded,
+                    child: WatchScreen(
+                      controller: widget.controller,
+                      onOpenChannel: (channel) =>
+                          _openChannel(context, channel),
+                    ),
+                  ),
+                ),
             ],
           ),
         );

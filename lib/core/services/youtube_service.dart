@@ -22,11 +22,13 @@ class PlaybackDetails {
     this.likesCount,
     this.dislikesCount,
     this.subscriberCount,
+    this.channelAvatarUrl,
     this.isLive = false,
     this.availableQualities = const ['Auto'],
     this.sponsorSegments = const [],
     this.comments = const [],
     this.commentsNextToken,
+    this.totalCommentsCount,
     this.liveChatMessages = const [],
   });
 
@@ -34,11 +36,13 @@ class PlaybackDetails {
   final String? likesCount;
   final String? dislikesCount;
   final String? subscriberCount;
+  final String? channelAvatarUrl;
   final bool isLive;
   final List<String> availableQualities;
   final List<SponsorSegment> sponsorSegments;
   final List<CommentItem> comments;
   final String? commentsNextToken;
+  final String? totalCommentsCount;
   final List<LiveChatMessage> liveChatMessages;
 }
 
@@ -58,37 +62,48 @@ class YoutubeService {
       'popular science documentary 4k',
       'trending live acoustic session',
       'creative filmmaking breakdown',
+      'new indie music releases',
+      'world travel 4k hdr film',
+      'modern architecture tour',
     ],
     'Live': [
       'live stream',
       'lofi hip hop radio live',
       'live news world',
       'live music concert stream',
+      'live nature wildlife cam',
     ],
     'Tech': [
       'flutter programming tech review',
       'software architecture engineering talk',
       'linux open source hardware review',
+      'new smartphone camera comparison',
+      'ai robotics engineering demo',
     ],
     'Music': [
       'latest official music video',
       'chill ambient lofi beats',
       'acoustic live studio session',
+      'electronic synthwave live set',
+      'indie pop new release',
     ],
     'Design': [
       'material design ui ux',
       'motion design typography tutorial',
       'industrial product design process',
+      '3d blender stylized art',
     ],
     'Gaming': [
       'gaming gameplay showcase',
       'indie game devlog',
       'retro game soundtrack',
+      'open world game 4k walkthrough',
     ],
     'Podcasts': [
       'tech podcast interview',
       'founder engineering podcast',
       'science philosophy podcast',
+      'creative storytelling podcast',
     ],
   };
 
@@ -228,6 +243,12 @@ class YoutubeService {
     final thumbUrl = thumbs.isNotEmpty
         ? (thumbs.last['url'] as String?)
         : 'https://i.ytimg.com/vi/$videoId/hqdefault.jpg';
+    final avatarThumbs = (vr['channelThumbnailSupportedRenderers']
+            ?['channelThumbnailWithLinkRenderer']?['thumbnail']?['thumbnails']
+        as List?) ??
+        const [];
+    final avatarUrl =
+        avatarThumbs.isNotEmpty ? (avatarThumbs.last['url'] as String?) : null;
 
     return VideoItem(
       id: videoId,
@@ -238,6 +259,7 @@ class YoutubeService {
         handle: '@${channelName.replaceAll(' ', '').toLowerCase()}',
         subscriberCount: 'YouTube channel',
         avatarColorValue: _colorForId(channelId),
+        avatarUrl: avatarUrl,
       ),
       duration: duration,
       durationSeconds: _parseDurationSeconds(duration),
@@ -379,7 +401,9 @@ class YoutubeService {
     if (subs == null && meta?.channelId != null) {
       subs = await fetchChannelSubscribers(meta!.channelId!);
     }
-    subs ??= await _fetchSubscriberCountFromWatch(videoId);
+    final watchOwner = await _fetchWatchOwnerInfo(videoId);
+    subs ??= watchOwner?.subscribers;
+    final channelAvatarUrl = watchOwner?.avatarUrl;
     final isLive = meta?.isLive ?? isLiveHint;
     if (isLive && liveChat.isEmpty && !isLiveHint) {
       liveChat = await _innerTubeLiveChat(videoId);
@@ -390,11 +414,13 @@ class YoutubeService {
       likesCount: ryd?.likes ?? meta?.likes,
       dislikesCount: ryd?.dislikes,
       subscriberCount: subs,
+      channelAvatarUrl: channelAvatarUrl,
       isLive: isLive,
       availableQualities: qualities,
       sponsorSegments: segments,
       comments: commentsPage.comments,
       commentsNextToken: commentsPage.nextToken,
+      totalCommentsCount: watchOwner?.totalComments,
       liveChatMessages: liveChat,
     );
   }
@@ -420,7 +446,8 @@ class YoutubeService {
     }
   }
 
-  Future<String?> _fetchSubscriberCountFromWatch(String videoId) async {
+  Future<({String? subscribers, String? avatarUrl, String? totalComments})?>
+      _fetchWatchOwnerInfo(String videoId) async {
     try {
       final res = await _http
           .post(
@@ -440,10 +467,65 @@ class YoutubeService {
           )
           .timeout(const Duration(seconds: 6));
       if (res.statusCode != 200) return null;
-      return _findSubscriberCount(jsonDecode(res.body));
+      final json = jsonDecode(res.body);
+      return (
+        subscribers: _findSubscriberCount(json),
+        avatarUrl: _findOwnerAvatarUrl(json),
+        totalComments: _findTotalCommentsCount(json),
+      );
     } catch (_) {
       return null;
     }
+  }
+
+  String? _findTotalCommentsCount(dynamic node) {
+    if (node is Map<String, dynamic>) {
+      final header = node['commentsEntryPointHeaderRenderer'];
+      if (header is Map<String, dynamic>) {
+        final count = _readSimpleText(header['commentCount']);
+        if (count != null && count.isNotEmpty) return count;
+      }
+      final panel = node['engagementPanelTitleHeaderRenderer'];
+      if (panel is Map<String, dynamic>) {
+        final title = _readSimpleText(panel['title'])?.toLowerCase() ?? '';
+        if (title.contains('comment')) {
+          final info = _readSimpleText(panel['contextualInfo']);
+          if (info != null && info.isNotEmpty) return info;
+        }
+      }
+      for (final value in node.values) {
+        final found = _findTotalCommentsCount(value);
+        if (found != null) return found;
+      }
+    } else if (node is List) {
+      for (final item in node) {
+        final found = _findTotalCommentsCount(item);
+        if (found != null) return found;
+      }
+    }
+    return null;
+  }
+
+  String? _findOwnerAvatarUrl(dynamic node) {
+    if (node is Map<String, dynamic>) {
+      final owner = node['videoOwnerRenderer'];
+      if (owner is Map<String, dynamic>) {
+        final thumbs = (owner['thumbnail']?['thumbnails'] as List?) ?? const [];
+        if (thumbs.isNotEmpty) {
+          return thumbs.last['url'] as String?;
+        }
+      }
+      for (final value in node.values) {
+        final found = _findOwnerAvatarUrl(value);
+        if (found != null) return found;
+      }
+    } else if (node is List) {
+      for (final item in node) {
+        final found = _findOwnerAvatarUrl(item);
+        if (found != null) return found;
+      }
+    }
+    return null;
   }
 
   String? _findSubscriberCount(dynamic node) {
@@ -699,6 +781,12 @@ class YoutubeService {
         final props = payload['properties'] as Map<String, dynamic>?;
         final author = payload['author'] as Map<String, dynamic>?;
         final toolbar = payload['toolbar'] as Map<String, dynamic>?;
+        final avatarSources =
+            (payload['avatar']?['image']?['sources'] as List?) ?? const [];
+        final avatarUrl = (author?['avatarThumbnailUrl'] as String?) ??
+            (avatarSources.isNotEmpty
+                ? avatarSources.last['url'] as String?
+                : null);
         final text = props?['content']?['content'] as String?;
         if (text != null && text.isNotEmpty) {
           out.add(
@@ -710,6 +798,7 @@ class YoutubeService {
               likes: (toolbar?['likeCountLiked'] as String?) ??
                   (toolbar?['likeCountNotliked'] as String?) ??
                   '0',
+              avatarUrl: avatarUrl,
               replyCount:
                   int.tryParse('${toolbar?['replyCount'] ?? '0'}') ?? 0,
             ),
@@ -720,6 +809,11 @@ class YoutubeService {
       final cr = node['commentRenderer'];
       if (cr is Map<String, dynamic>) {
         final text = _readRuns(cr['contentText']);
+        final authorThumbs =
+            (cr['authorThumbnail']?['thumbnails'] as List?) ?? const [];
+        final authorAvatar = authorThumbs.isNotEmpty
+            ? authorThumbs.last['url'] as String?
+            : null;
         if (text != null && text.isNotEmpty) {
           out.add(
             CommentItem(
@@ -728,6 +822,7 @@ class YoutubeService {
               text: text,
               publishedAgo: _readSimpleText(cr['publishedTimeText']) ?? '',
               likes: _readSimpleText(cr['voteCount']) ?? '0',
+              avatarUrl: authorAvatar,
               replyCount: (cr['replyCount'] as int?) ?? 0,
             ),
           );

@@ -5,6 +5,7 @@ class ChannelInfo {
     required this.handle,
     required this.subscriberCount,
     required this.avatarColorValue,
+    this.avatarUrl,
     this.isVerified = false,
   });
 
@@ -13,15 +14,20 @@ class ChannelInfo {
   final String handle;
   final String subscriberCount;
   final int avatarColorValue;
+  final String? avatarUrl;
   final bool isVerified;
 
-  ChannelInfo copyWith({String? subscriberCount}) {
+  ChannelInfo copyWith({
+    String? subscriberCount,
+    String? avatarUrl,
+  }) {
     return ChannelInfo(
       id: id,
       name: name,
       handle: handle,
       subscriberCount: subscriberCount ?? this.subscriberCount,
       avatarColorValue: avatarColorValue,
+      avatarUrl: avatarUrl ?? this.avatarUrl,
       isVerified: isVerified,
     );
   }

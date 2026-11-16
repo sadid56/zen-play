@@ -31,6 +31,7 @@ class CommentItem {
     required this.text,
     required this.publishedAgo,
     required this.likes,
+    this.avatarUrl,
     this.replyCount = 0,
   });
 
@@ -39,6 +40,7 @@ class CommentItem {
   final String text;
   final String publishedAgo;
   final String likes;
+  final String? avatarUrl;
   final int replyCount;
 }
 
@@ -69,6 +71,7 @@ class VideoItem {
     required this.dislikesCount,
     required this.accentColorValue,
     this.thumbnailUrl,
+    this.totalCommentsCount,
     this.isLive = false,
     this.hasSponsorBlock = false,
     this.hasDeArrowTitle = false,
@@ -89,6 +92,7 @@ class VideoItem {
   final String dislikesCount;
   final int accentColorValue;
   final String? thumbnailUrl;
+  final String? totalCommentsCount;
   final bool isLive;
   final bool hasSponsorBlock;
   final bool hasDeArrowTitle;
@@ -100,6 +104,7 @@ class VideoItem {
     String? likesCount,
     String? dislikesCount,
     String? description,
+    String? totalCommentsCount,
     bool? isLive,
     bool? hasSponsorBlock,
     List<CommentItem>? comments,
@@ -118,6 +123,7 @@ class VideoItem {
       dislikesCount: dislikesCount ?? this.dislikesCount,
       accentColorValue: accentColorValue,
       thumbnailUrl: thumbnailUrl,
+      totalCommentsCount: totalCommentsCount ?? this.totalCommentsCount,
       isLive: isLive ?? this.isLive,
       hasSponsorBlock: hasSponsorBlock ?? this.hasSponsorBlock,
       hasDeArrowTitle: hasDeArrowTitle,

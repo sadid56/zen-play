@@ -30,10 +30,8 @@ class _WatchScreenState extends State<WatchScreen> {
   final GlobalKey _playerKey = GlobalKey();
   bool _descriptionExpanded = false;
   bool _isInPipMode = false;
-  YoutubePlayerController? _ytController;
-  StreamSubscription<YoutubeVideoState>? _videoStateSub;
-  String? _loadedVideoId;
-  String? _skippedNotice;
+  bool _isLoopEnabled = false;
+  YoutubePlayerController? _loopAttachedController;
 
   @override
   void initState() {
@@ -48,8 +46,6 @@ class _WatchScreenState extends State<WatchScreen> {
     _setNativePipEnabled(false);
     _pipChannel.setMethodCallHandler(null);
     widget.controller.removeListener(_syncPlayerWithState);
-    _videoStateSub?.cancel();
-    _ytController?.close();
     super.dispose();
   }
 
@@ -58,7 +54,7 @@ class _WatchScreenState extends State<WatchScreen> {
       final inPip = call.arguments == true;
       setState(() => _isInPipMode = inPip);
       if (inPip) {
-        _ytController?.playVideo();
+        widget.controller.youtubeController?.playVideo();
       }
     }
   }
@@ -77,56 +73,16 @@ class _WatchScreenState extends State<WatchScreen> {
 
   void _syncPlayerWithState() {
     _setNativePipEnabled(widget.controller.backgroundPlayEnabled);
-    final video = widget.controller.activeVideo;
-    if (video == null) return;
-
-    if (_ytController == null) {
-      _initPlayer(video);
-      return;
-    }
-
-    if (_loadedVideoId != video.id) {
-      _loadedVideoId = video.id;
-      _skippedNotice = null;
-      _ytController!.loadVideoById(videoId: video.id);
-    }
-
-    _ytController!.setPlaybackRate(widget.controller.playbackSpeed);
-  }
-
-  void _initPlayer(VideoItem video) {
-    _loadedVideoId = video.id;
-    final next = YoutubePlayerController.fromVideoId(
-      videoId: video.id,
-      autoPlay: true,
-      params: const YoutubePlayerParams(
-        showFullscreenButton: true,
-        mute: false,
-      ),
-    );
-
-    _videoStateSub?.cancel();
-    _videoStateSub = next.videoStateStream.listen((state) {
-      final posSec = state.position.inMilliseconds / 1000.0;
-      if (video.durationSeconds > 0) {
-        widget.controller.seekTo(posSec / video.durationSeconds);
-      }
-
-      if (widget.controller.sponsorBlockEnabled) {
-        for (final seg in widget.controller.activeSponsorSegments) {
-          if (posSec >= seg.startSeconds && posSec < seg.endSeconds - 0.5) {
-            next.seekTo(seconds: seg.endSeconds, allowSeekAhead: true);
-            if (mounted) {
-              setState(() => _skippedNotice = 'Skipped ${seg.category}');
-            }
-            break;
-          }
+    final player = widget.controller.youtubeController;
+    if (player != null && _loopAttachedController != player) {
+      _loopAttachedController = player;
+      player.listen((value) {
+        if (_isLoopEnabled && value.playerState == PlayerState.ended) {
+          player.seekTo(seconds: 0, allowSeekAhead: true);
+          player.playVideo();
         }
-      }
-    });
-
-    _ytController = next;
-    if (mounted) setState(() {});
+      });
+    }
   }
 
   String _mapQualityToYoutubeCode(String quality) {
@@ -143,7 +99,7 @@ class _WatchScreenState extends State<WatchScreen> {
 
   Future<void> _applyPlayerQuality(String quality) async {
     widget.controller.setQuality(quality);
-    final player = _ytController;
+    final player = widget.controller.youtubeController;
     if (player == null) return;
     final code = _mapQualityToYoutubeCode(quality);
     try {
@@ -151,46 +107,6 @@ class _WatchScreenState extends State<WatchScreen> {
         "if (window.player && window.player.setPlaybackQualityRange) { window.player.setPlaybackQualityRange('$code', '$code'); } if (window.player && window.player.setPlaybackQuality) { window.player.setPlaybackQuality('$code'); }",
       );
     } catch (_) {}
-  }
-
-  void _showPlayerSettingsSheet(BuildContext context) {
-    showModalBottomSheet<void>(
-      context: context,
-      builder: (_) => SafeArea(
-        child: ListenableBuilder(
-          listenable: widget.controller,
-          builder: (context, _) => Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const ListTile(
-                title: Text(
-                  'Player settings',
-                  style: TextStyle(fontWeight: FontWeight.w700),
-                ),
-              ),
-              ListTile(
-                leading: const Icon(Icons.high_quality_outlined),
-                title: const Text('Quality'),
-                trailing: Text(widget.controller.selectedQuality),
-                onTap: () {
-                  Navigator.pop(context);
-                  _showQualitySheet(context);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.speed_outlined),
-                title: const Text('Playback speed'),
-                trailing: Text('${widget.controller.playbackSpeed}x'),
-                onTap: () {
-                  Navigator.pop(context);
-                  _showSpeedSheet(context);
-                },
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
   }
 
   void _showQualitySheet(BuildContext context) {
@@ -284,7 +200,6 @@ class _WatchScreenState extends State<WatchScreen> {
                     : null,
                 onTap: () {
                   widget.controller.setPlaybackSpeed(s);
-                  _ytController?.setPlaybackRate(s);
                   Navigator.pop(context);
                 },
               ),
@@ -324,7 +239,7 @@ class _WatchScreenState extends State<WatchScreen> {
                   child: Row(
                     children: [
                       Text(
-                        'Comments (${video.comments.length})',
+                        'Comments (${video.totalCommentsCount ?? video.comments.length})',
                         style: Theme.of(context)
                             .textTheme
                             .titleMedium
@@ -375,24 +290,13 @@ class _WatchScreenState extends State<WatchScreen> {
                                   );
                                 }
                                 final c = video.comments[index];
-                                final initial = c.author.isNotEmpty
-                                    ? c.author.replaceAll('@', '')[0].toUpperCase()
-                                    : 'U';
                                 return Row(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    CircleAvatar(
+                                    _CommentAvatar(
+                                      author: c.author,
+                                      avatarUrl: c.avatarUrl,
                                       radius: 16,
-                                      backgroundColor: Theme.of(context)
-                                          .colorScheme
-                                          .secondaryContainer,
-                                      child: Text(
-                                        initial,
-                                        style: const TextStyle(
-                                          fontSize: 13,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
                                     ),
                                     const SizedBox(width: 12),
                                     Expanded(
@@ -596,7 +500,7 @@ class _WatchScreenState extends State<WatchScreen> {
         final theme = Theme.of(context);
         final scheme = theme.colorScheme;
         final upNext = widget.controller.upNextFor(video);
-        final player = _ytController;
+        final player = widget.controller.youtubeController;
 
         return Scaffold(
           backgroundColor: _isInPipMode ? Colors.black : null,
@@ -613,11 +517,114 @@ class _WatchScreenState extends State<WatchScreen> {
                       ? null
                       : (details) {
                           if ((details.primaryVelocity ?? 0) > 350) {
-                            Navigator.pop(context);
+                            widget.controller.minimizeWatch();
                           }
                         },
-                  child: Stack(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
+                      if (!_isInPipMode)
+                        Container(
+                          color: Colors.black,
+                          padding: const EdgeInsets.symmetric(horizontal: 6),
+                          height: 40,
+                          child: Row(
+                            children: [
+                              IconButton(
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(
+                                  minWidth: 36,
+                                  minHeight: 36,
+                                ),
+                                color: Colors.white,
+                                onPressed: widget.controller.minimizeWatch,
+                                icon: const Icon(
+                                  Icons.keyboard_arrow_down_rounded,
+                                ),
+                                tooltip: 'Minimize',
+                              ),
+                              if (widget.controller.sponsorBlockEnabled &&
+                                  video.hasSponsorBlock)
+                                Container(
+                                  margin: const EdgeInsets.only(left: 4),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 2,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white12,
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  child: const Text(
+                                    'SponsorBlock',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                ),
+                              const Spacer(),
+                              TextButton(
+                                style: TextButton.styleFrom(
+                                  foregroundColor: Colors.white,
+                                  minimumSize: const Size(0, 32),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                  ),
+                                ),
+                                onPressed: () => _showQualitySheet(context),
+                                child: Text(widget.controller.selectedQuality),
+                              ),
+                              TextButton(
+                                style: TextButton.styleFrom(
+                                  foregroundColor: Colors.white,
+                                  minimumSize: const Size(0, 32),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                  ),
+                                ),
+                                onPressed: () => _showSpeedSheet(context),
+                                child: Text('${widget.controller.playbackSpeed}x'),
+                              ),
+                              IconButton(
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(
+                                  minWidth: 36,
+                                  minHeight: 36,
+                                ),
+                                color: _isLoopEnabled
+                                    ? scheme.primary
+                                    : Colors.white,
+                                onPressed: () {
+                                  setState(
+                                    () => _isLoopEnabled = !_isLoopEnabled,
+                                  );
+                                },
+                                icon: Icon(
+                                  _isLoopEnabled
+                                      ? Icons.repeat_one_rounded
+                                      : Icons.repeat_rounded,
+                                  size: 20,
+                                ),
+                                tooltip: 'Loop video',
+                              ),
+                              IconButton(
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(
+                                  minWidth: 36,
+                                  minHeight: 36,
+                                ),
+                                color: Colors.white,
+                                onPressed: _enterPip,
+                                icon: const Icon(
+                                  Icons.picture_in_picture_alt_rounded,
+                                  size: 20,
+                                ),
+                                tooltip: 'Picture-in-Picture',
+                              ),
+                            ],
+                          ),
+                        ),
                       if (player != null)
                         YoutubePlayer(
                           key: _playerKey,
@@ -627,73 +634,6 @@ class _WatchScreenState extends State<WatchScreen> {
                         const AspectRatio(
                           aspectRatio: 16 / 9,
                           child: Center(child: CircularProgressIndicator()),
-                        ),
-                      if (!_isInPipMode)
-                        Positioned(
-                          top: 6,
-                          left: 6,
-                          right: 6,
-                          child: Row(
-                            children: [
-                              IconButton(
-                                style: IconButton.styleFrom(
-                                  backgroundColor: Colors.black54,
-                                  foregroundColor: Colors.white,
-                                ),
-                                onPressed: () => Navigator.pop(context),
-                                icon: const Icon(
-                                  Icons.keyboard_arrow_down_rounded,
-                                ),
-                                tooltip: 'Minimize',
-                              ),
-                              const Spacer(),
-                              if (_skippedNotice != null)
-                                Container(
-                                  margin: const EdgeInsets.only(right: 6),
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 10,
-                                    vertical: 4,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: Colors.black54,
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  child: Text(
-                                    _skippedNotice!,
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 11,
-                                    ),
-                                  ),
-                                ),
-                              IconButton(
-                                style: IconButton.styleFrom(
-                                  backgroundColor: Colors.black54,
-                                  foregroundColor: Colors.white,
-                                ),
-                                onPressed: _enterPip,
-                                icon: const Icon(
-                                  Icons.picture_in_picture_alt_rounded,
-                                  size: 20,
-                                ),
-                                tooltip: 'Picture-in-Picture',
-                              ),
-                              const SizedBox(width: 4),
-                              IconButton(
-                                style: IconButton.styleFrom(
-                                  backgroundColor: Colors.black54,
-                                  foregroundColor: Colors.white,
-                                ),
-                                onPressed: () =>
-                                    _showPlayerSettingsSheet(context),
-                                icon: const Icon(
-                                  Icons.settings_outlined,
-                                  size: 20,
-                                ),
-                                tooltip: 'Quality & Speed',
-                              ),
-                            ],
-                          ),
                         ),
                     ],
                   ),
@@ -749,12 +689,18 @@ class _WatchScreenState extends State<WatchScreen> {
                                         fontWeight: FontWeight.w600,
                                       ),
                                     ),
-                                    Text(
-                                      video.channel.subscriberCount,
-                                      style: theme.textTheme.bodySmall?.copyWith(
-                                        color: scheme.onSurfaceVariant,
+                                    if (widget.controller.isLoadingWatchDetails &&
+                                        video.channel.subscriberCount ==
+                                            'YouTube channel') ...[
+                                      const SizedBox(height: 4),
+                                      const SkeletonBox(width: 110, height: 11),
+                                    ] else
+                                      Text(
+                                        video.channel.subscriberCount,
+                                        style: theme.textTheme.bodySmall?.copyWith(
+                                          color: scheme.onSurfaceVariant,
+                                        ),
                                       ),
-                                    ),
                                   ],
                                 ),
                               ),
@@ -847,12 +793,18 @@ class _WatchScreenState extends State<WatchScreen> {
                                         ),
                                       ),
                                       const SizedBox(width: 8),
-                                      Text(
-                                        '${video.comments.length}',
-                                        style: theme.textTheme.bodySmall?.copyWith(
-                                          color: scheme.onSurfaceVariant,
+                                      if (widget.controller.isLoadingWatchDetails &&
+                                          video.totalCommentsCount == null &&
+                                          video.comments.isEmpty)
+                                        const SkeletonBox(width: 32, height: 12)
+                                      else
+                                        Text(
+                                          video.totalCommentsCount ??
+                                              '${video.comments.length}',
+                                          style: theme.textTheme.bodySmall?.copyWith(
+                                            color: scheme.onSurfaceVariant,
+                                          ),
                                         ),
-                                      ),
                                       const Spacer(),
                                       Icon(
                                         Icons.unfold_more_rounded,
@@ -879,19 +831,11 @@ class _WatchScreenState extends State<WatchScreen> {
                                     const SizedBox(height: 8),
                                     Row(
                                       children: [
-                                        CircleAvatar(
+                                        _CommentAvatar(
+                                          author: video.comments.first.author,
+                                          avatarUrl:
+                                              video.comments.first.avatarUrl,
                                           radius: 12,
-                                          backgroundColor:
-                                              scheme.secondaryContainer,
-                                          child: Text(
-                                            video.comments.first.author
-                                                    .isNotEmpty
-                                                ? video.comments.first.author
-                                                    .replaceAll('@', '')[0]
-                                                    .toUpperCase()
-                                                : 'U',
-                                            style: const TextStyle(fontSize: 11),
-                                          ),
                                         ),
                                         const SizedBox(width: 8),
                                         Expanded(
@@ -974,7 +918,8 @@ class _WatchScreenState extends State<WatchScreen> {
                                         ),
                                         title: Text(chapter.title),
                                         onTap: () {
-                                          _ytController?.seekTo(
+                                          widget.controller.youtubeController
+                                              ?.seekTo(
                                             seconds: chapter.seconds.toDouble(),
                                             allowSeekAhead: true,
                                           );
@@ -1016,6 +961,48 @@ class _WatchScreenState extends State<WatchScreen> {
           ),
         );
       },
+    );
+  }
+}
+
+class _CommentAvatar extends StatelessWidget {
+  const _CommentAvatar({
+    required this.author,
+    required this.avatarUrl,
+    required this.radius,
+  });
+
+  final String author;
+  final String? avatarUrl;
+  final double radius;
+
+  @override
+  Widget build(BuildContext context) {
+    final cleaned = author.replaceAll('@', '').trim();
+    final initial = cleaned.isNotEmpty ? cleaned[0].toUpperCase() : 'U';
+    final fallback = CircleAvatar(
+      radius: radius,
+      backgroundColor: Theme.of(context).colorScheme.secondaryContainer,
+      child: Text(
+        initial,
+        style: TextStyle(
+          fontSize: radius * 0.8,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+
+    final url = avatarUrl;
+    if (url == null || url.isEmpty) return fallback;
+
+    return ClipOval(
+      child: Image.network(
+        url,
+        width: radius * 2,
+        height: radius * 2,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => fallback,
+      ),
     );
   }
 }

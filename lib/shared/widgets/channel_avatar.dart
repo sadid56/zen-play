@@ -15,7 +15,7 @@ class ChannelAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final avatar = CircleAvatar(
+    final fallback = CircleAvatar(
       radius: radius,
       backgroundColor: Color(channel.avatarColorValue),
       foregroundColor: Colors.white,
@@ -27,6 +27,19 @@ class ChannelAvatar extends StatelessWidget {
         ),
       ),
     );
+
+    final url = channel.avatarUrl;
+    final avatar = url != null && url.isNotEmpty
+        ? ClipOval(
+            child: Image.network(
+              url,
+              width: radius * 2,
+              height: radius * 2,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => fallback,
+            ),
+          )
+        : fallback;
 
     if (onTap == null) return avatar;
     return InkWell(

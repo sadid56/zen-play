@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:youtube_player_flutter/youtube_player_flutter.dart';
 import 'package:zenplay/core/data/video_repository.dart';
 import 'package:zenplay/core/models/video_item.dart';
 import 'package:zenplay/core/services/youtube_service.dart';
@@ -11,6 +13,10 @@ class ZenPlayController extends ChangeNotifier {
   }) : _youtube = youtubeService ?? YoutubeService() {
     if (enableRemoteFetch) {
       _initializeApp();
+      _backgroundRefreshTimer = Timer.periodic(
+        const Duration(minutes: 2),
+        (_) => refreshFeedInBackground(),
+      );
     } else {
       _feedVideos = List.of(VideoRepository.videos);
     }
@@ -18,11 +24,13 @@ class ZenPlayController extends ChangeNotifier {
 
   final YoutubeService _youtube;
   final bool enableRemoteFetch;
+  Timer? _backgroundRefreshTimer;
 
   ThemeMode _themeMode = ThemeMode.system;
   int _navIndex = 0;
   String _selectedCategory = 'All';
   int _feedPage = 0;
+  int _refreshCycle = 0;
 
   bool _isAppInitializing = false;
   List<VideoItem> _feedVideos = [];
@@ -37,6 +45,9 @@ class ZenPlayController extends ChangeNotifier {
   String? _commentsNextToken;
 
   VideoItem? _activeVideo;
+  bool _isWatchExpanded = false;
+  YoutubePlayerController? _ytController;
+  StreamSubscription<YoutubeVideoState>? _ytStateSub;
   List<String> _availableQualities = const ['Auto'];
   List<SponsorSegment> _activeSponsorSegments = const [];
   final List<LiveChatMessage> _liveChatMessages = [];
@@ -76,6 +87,8 @@ class ZenPlayController extends ChangeNotifier {
   bool get isLoadingMoreComments => _isLoadingMoreComments;
   bool get hasMoreComments => _commentsNextToken != null;
   VideoItem? get activeVideo => _activeVideo;
+  bool get isWatchExpanded => _isWatchExpanded;
+  YoutubePlayerController? get youtubeController => _ytController;
   List<String> get availableQualities => List.unmodifiable(_availableQualities);
   List<SponsorSegment> get activeSponsorSegments => _activeSponsorSegments;
   List<LiveChatMessage> get liveChatMessages => List.unmodifiable(_liveChatMessages);
@@ -187,16 +200,22 @@ class ZenPlayController extends ChangeNotifier {
     }
   }
 
-  Future<void> loadFeed({String? category}) async {
+  Future<void> loadFeed({String? category, bool isRefresh = false}) async {
     final target = category ?? _selectedCategory;
     if (!enableRemoteFetch) return;
-    _feedPage = 0;
+    if (isRefresh) {
+      _refreshCycle += 1;
+      _feedPage = _refreshCycle;
+    } else {
+      _feedPage = _refreshCycle;
+    }
     _isLoadingFeed = true;
     notifyListeners();
     try {
-      final remote = await _youtube.fetchFeed(target, page: 0);
+      final remote = await _youtube.fetchFeed(target, page: _feedPage);
       if (remote.isNotEmpty) {
-        _feedVideos = remote;
+        final shuffled = List.of(remote)..shuffle();
+        _feedVideos = shuffled;
       } else if (_feedVideos.isEmpty) {
         _feedVideos = List.of(VideoRepository.videos);
       }
@@ -208,6 +227,24 @@ class ZenPlayController extends ChangeNotifier {
       _isLoadingFeed = false;
       notifyListeners();
     }
+  }
+
+  Future<void> refreshFeedInBackground() async {
+    if (!enableRemoteFetch || _isLoadingFeed || _isLoadingMoreFeed) return;
+    try {
+      _refreshCycle += 1;
+      final remote = await _youtube.fetchFeed(
+        _selectedCategory,
+        page: _refreshCycle,
+      );
+      if (remote.isEmpty) return;
+      final existingIds = _feedVideos.map((v) => v.id).toSet();
+      final fresh = remote.where((v) => !existingIds.contains(v.id)).toList();
+      if (fresh.isNotEmpty) {
+        _feedVideos = [...fresh, ..._feedVideos];
+        notifyListeners();
+      }
+    } catch (_) {}
   }
 
   Future<void> loadMoreFeed() async {
@@ -303,8 +340,21 @@ class ZenPlayController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void expandWatch() {
+    if (_activeVideo == null || _isWatchExpanded) return;
+    _isWatchExpanded = true;
+    notifyListeners();
+  }
+
+  void minimizeWatch() {
+    if (!_isWatchExpanded) return;
+    _isWatchExpanded = false;
+    notifyListeners();
+  }
+
   Future<void> playVideo(VideoItem video) async {
     _activeVideo = video;
+    _isWatchExpanded = true;
     _availableQualities = const ['Auto'];
     _activeSponsorSegments = const [];
     _commentsNextToken = null;
@@ -316,6 +366,10 @@ class ZenPlayController extends ChangeNotifier {
     _watchHistoryIds.insert(0, video.id);
     if (_watchHistoryIds.length > 10) {
       _watchHistoryIds.removeRange(10, _watchHistoryIds.length);
+    }
+
+    if (enableRemoteFetch) {
+      _ensureYoutubeController(video);
     }
 
     if (!enableRemoteFetch) {
@@ -342,12 +396,17 @@ class ZenPlayController extends ChangeNotifier {
           ..addAll(details.liveChatMessages);
       }
       _activeVideo = video.copyWith(
-        channel: details.subscriberCount != null
-            ? video.channel.copyWith(subscriberCount: details.subscriberCount)
+        channel: (details.subscriberCount != null ||
+                details.channelAvatarUrl != null)
+            ? video.channel.copyWith(
+                subscriberCount: details.subscriberCount,
+                avatarUrl: details.channelAvatarUrl,
+              )
             : null,
         description: details.description ?? video.description,
         likesCount: details.likesCount ?? video.likesCount,
         dislikesCount: details.dislikesCount ?? video.dislikesCount,
+        totalCommentsCount: details.totalCommentsCount ?? video.totalCommentsCount,
         isLive: details.isLive || video.isLive,
         hasSponsorBlock: details.sponsorSegments.isNotEmpty || video.hasSponsorBlock,
         comments: details.comments.isNotEmpty ? details.comments : video.comments,
@@ -436,9 +495,53 @@ class ZenPlayController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void _ensureYoutubeController(VideoItem video) {
+    if (_ytController == null) {
+      final next = YoutubePlayerController.fromVideoId(
+        videoId: video.id,
+        autoPlay: true,
+        params: const YoutubePlayerParams(
+          showFullscreenButton: true,
+          mute: false,
+        ),
+      );
+      _ytStateSub?.cancel();
+      _ytStateSub = next.videoStateStream.listen((state) {
+        final active = _activeVideo;
+        if (active == null) return;
+        final posSec = state.position.inMilliseconds / 1000.0;
+        if (active.durationSeconds > 0) {
+          _playbackProgress = (posSec / active.durationSeconds).clamp(0.0, 1.0);
+          notifyListeners();
+        }
+        if (_sponsorBlockEnabled) {
+          for (final seg in _activeSponsorSegments) {
+            if (posSec >= seg.startSeconds && posSec < seg.endSeconds - 0.5) {
+              next.seekTo(seconds: seg.endSeconds, allowSeekAhead: true);
+              break;
+            }
+          }
+        }
+      });
+      _ytController = next;
+      next.webViewController.runJavaScript(
+        "Object.defineProperty(document,'hidden',{get:()=>false});"
+        "Object.defineProperty(document,'visibilityState',{get:()=>'visible'});",
+      );
+    } else {
+      _ytController!.loadVideoById(videoId: video.id);
+    }
+    _ytController?.setPlaybackRate(_playbackSpeed);
+  }
+
   void togglePlayPause() {
     if (_activeVideo == null) return;
     _isPlaying = !_isPlaying;
+    if (_isPlaying) {
+      _ytController?.playVideo();
+    } else {
+      _ytController?.pauseVideo();
+    }
     notifyListeners();
   }
 
@@ -448,7 +551,12 @@ class ZenPlayController extends ChangeNotifier {
   }
 
   void closeMiniPlayer() {
+    _ytStateSub?.cancel();
+    _ytStateSub = null;
+    _ytController?.close();
+    _ytController = null;
     _activeVideo = null;
+    _isWatchExpanded = false;
     _activeSponsorSegments = const [];
     _isPlaying = false;
     notifyListeners();
@@ -456,6 +564,7 @@ class ZenPlayController extends ChangeNotifier {
 
   void setPlaybackSpeed(double speed) {
     _playbackSpeed = speed;
+    _ytController?.setPlaybackRate(speed);
     notifyListeners();
   }
 
@@ -603,6 +712,9 @@ class ZenPlayController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _backgroundRefreshTimer?.cancel();
+    _ytStateSub?.cancel();
+    _ytController?.close();
     _youtube.dispose();
     super.dispose();
   }

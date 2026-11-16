@@ -1,6 +1,7 @@
 package com.zenplay.app
 
 import android.app.PictureInPictureParams
+import android.content.Intent
 import android.content.res.Configuration
 import android.os.Build
 import android.util.Rational
@@ -21,6 +22,7 @@ class MainActivity : FlutterActivity() {
                     "setPipEnabled" -> {
                         pipEnabled = call.argument<Boolean>("enabled") ?: false
                         updatePipParams()
+                        updateBackgroundService(pipEnabled)
                         result.success(null)
                     }
                     "enterPip" -> {
@@ -61,6 +63,19 @@ class MainActivity : FlutterActivity() {
         val params = buildPipParams() ?: return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             setPictureInPictureParams(params)
+        }
+    }
+
+    private fun updateBackgroundService(enabled: Boolean) {
+        val intent = Intent(this, BackgroundAudioService::class.java)
+        if (enabled) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+        } else {
+            stopService(intent)
         }
     }
 
