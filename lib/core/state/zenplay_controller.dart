@@ -63,6 +63,7 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
   bool _isLooping = false;
   bool _isMuted = false;
   int _volume = 100;
+  String? _playbackError;
   final ValueNotifier<double> playbackProgressNotifier = ValueNotifier<double>(0.0);
   double _playbackSpeed = 1.0;
   String _selectedQuality = 'Auto';
@@ -102,6 +103,7 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
   bool get isLooping => _isLooping;
   bool get isMuted => _isMuted;
   int get volume => _volume;
+  String? get playbackError => _playbackError;
   List<String> get availableQualities => List.unmodifiable(_availableQualities);
   List<SponsorSegment> get activeSponsorSegments => _activeSponsorSegments;
   List<LiveChatMessage> get liveChatMessages => List.unmodifiable(_liveChatMessages);
@@ -652,6 +654,7 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
     _commentsNextToken = null;
     _isLoadingMoreComments = false;
     _handledEndForCurrent = false;
+    _playbackError = null;
     _seedLiveChat(video);
     _isPlaying = true;
     playbackProgressNotifier.value = 0.0;
@@ -685,6 +688,14 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
     _isLoadingWatchDetails = true;
     notifyListeners();
 
+    final localPlaying = _videoController != null;
+
+    // 1. Start stream resolution immediately without waiting for comments/metadata
+    if (!localPlaying) {
+      unawaited(_startFastStreamPlayback(video));
+    }
+
+    // 2. Fetch comments, description, subscribers, SponsorBlock in parallel
     try {
       final details = await _repository.resolvePlaybackDetails(
         video.id,
@@ -692,8 +703,6 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
         isLiveHint: video.isLive,
       );
       if (_activeVideo?.id != video.id) return;
-      _availableQualities = details.availableQualities;
-      _qualityStreams = details.qualityStreams;
       _activeSponsorSegments = details.sponsorSegments;
       _commentsNextToken = details.commentsNextToken;
       _relatedVideos = details.relatedVideos;
@@ -718,24 +727,40 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
         hasSponsorBlock: details.sponsorSegments.isNotEmpty || video.hasSponsorBlock,
         comments: details.comments.isNotEmpty ? details.comments : video.comments,
       );
-
-      if (_videoController == null) {
-        final chosenTrack = _qualityStreams[_selectedQuality] ??
-            _qualityStreams['Auto'] ??
-            (details.streamUrl != null
-                ? StreamTrackOption(videoUrl: details.streamUrl!)
-                : null);
-        if (chosenTrack != null && chosenTrack.videoUrl.isNotEmpty) {
-          await _initVideoController(
-            networkUrl: chosenTrack.videoUrl,
-            audioUrl: chosenTrack.audioUrl,
-          );
-        }
-      }
     } catch (_) {
     } finally {
       _isLoadingWatchDetails = false;
       notifyListeners();
+    }
+  }
+
+  Future<void> _startFastStreamPlayback(VideoItem video) async {
+    try {
+      final streams = await _repository.fetchStreamsFast(video.id);
+      if (_activeVideo?.id != video.id) return;
+      _availableQualities = streams.qualities;
+      _qualityStreams = streams.qualityStreams;
+
+      final chosenTrack = _qualityStreams[_selectedQuality] ??
+          _qualityStreams['Auto'] ??
+          (streams.defaultUrl != null
+              ? StreamTrackOption(videoUrl: streams.defaultUrl!)
+              : null);
+      if (chosenTrack != null && chosenTrack.videoUrl.isNotEmpty) {
+        await _initVideoController(
+          networkUrl: chosenTrack.videoUrl,
+          audioUrl: chosenTrack.audioUrl,
+          isHls: chosenTrack.isHls,
+        );
+      } else {
+        _playbackError = 'Stream unavailable for this video.';
+        notifyListeners();
+      }
+    } catch (_) {
+      if (_activeVideo?.id == video.id) {
+        _playbackError = 'Unable to load video stream.';
+        notifyListeners();
+      }
     }
   }
 
@@ -875,10 +900,13 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _initVideoController({
     String? networkUrl,
     String? audioUrl,
+    bool isHls = false,
     String? filePath,
     Duration? startAt,
+    bool allowFallback = true,
   }) async {
     await _disposeVideoController();
+    _playbackError = null;
     final options = VideoPlayerOptions(
       allowBackgroundPlayback: _backgroundPlayEnabled,
       mixWithOthers: audioUrl != null,
@@ -890,6 +918,7 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
           )
         : VideoPlayerController.networkUrl(
             Uri.parse(networkUrl!),
+            formatHint: isHls ? VideoFormat.hls : null,
             videoPlayerOptions: options,
           );
     final nextAudio = audioUrl != null
@@ -908,7 +937,7 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
       await Future.wait([
         nextVideo.initialize(),
         if (nextAudio != null) nextAudio.initialize(),
-      ]);
+      ]).timeout(const Duration(seconds: 15));
       if (_videoController != nextVideo) return;
       await nextVideo.setLooping(_isLooping);
       await nextVideo.setPlaybackSpeed(_playbackSpeed);
@@ -934,6 +963,18 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
       }
       notifyListeners();
     } catch (_) {
+      if (allowFallback && _qualityStreams['360p'] != null) {
+        final fallback = _qualityStreams['360p']!;
+        await _initVideoController(
+          networkUrl: fallback.videoUrl,
+          audioUrl: fallback.audioUrl,
+          isHls: fallback.isHls,
+          startAt: startAt,
+          allowFallback: false,
+        );
+        return;
+      }
+      _playbackError = 'Unable to play this video stream.';
       notifyListeners();
     }
   }
@@ -1078,6 +1119,7 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
       await _initVideoController(
         networkUrl: track.videoUrl,
         audioUrl: track.audioUrl,
+        isHls: track.isHls,
         startAt: currentPos,
       );
     } else {

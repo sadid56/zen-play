@@ -1,7 +1,12 @@
 import 'package:zenplay/core/models/video_item.dart';
 import 'package:zenplay/core/services/youtube_service.dart';
 export 'package:zenplay/core/services/youtube_service.dart'
-    show ChannelProfileData, CommentsPage, PlaybackDetails, StreamTrackOption;
+    show
+        ChannelProfileData,
+        CommentsPage,
+        PlaybackDetails,
+        StreamResolutionResult,
+        StreamTrackOption;
 
 class ApiEndpoints {
   const ApiEndpoints({
@@ -34,6 +39,7 @@ abstract interface class VideoDataRepository {
     String channelName,
   );
   Future<String?> fetchChannelSubscribers(String channelId);
+  Future<StreamResolutionResult> fetchStreamsFast(String videoId);
   Future<PlaybackDetails> resolvePlaybackDetails(
     String videoId, {
     String? channelId,
@@ -84,6 +90,10 @@ class YoutubeDataRepository implements VideoDataRepository {
   @override
   Future<String?> fetchChannelSubscribers(String channelId) =>
       _service.fetchChannelSubscribers(channelId);
+
+  @override
+  Future<StreamResolutionResult> fetchStreamsFast(String videoId) =>
+      _service.fetchStreamsFast(videoId);
 
   @override
   Future<PlaybackDetails> resolvePlaybackDetails(

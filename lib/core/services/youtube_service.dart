@@ -39,14 +39,28 @@ class ChannelProfileData {
   final List<VideoItem> uploads;
 }
 
+class StreamResolutionResult {
+  const StreamResolutionResult({
+    this.defaultUrl,
+    this.qualityStreams = const {},
+    this.qualities = const ['Auto'],
+  });
+
+  final String? defaultUrl;
+  final Map<String, StreamTrackOption> qualityStreams;
+  final List<String> qualities;
+}
+
 class StreamTrackOption {
   const StreamTrackOption({
     required this.videoUrl,
     this.audioUrl,
+    this.isHls = false,
   });
 
   final String videoUrl;
   final String? audioUrl;
+  final bool isHls;
 }
 
 class PlaybackDetails {
@@ -96,6 +110,7 @@ class YoutubeService {
   final ApiEndpoints endpoints;
   final YoutubeExplode _yt;
   final http.Client _http;
+  final Map<String, StreamResolutionResult> _streamCache = {};
 
   static const Map<String, List<String>> _categoryQueries = {
     'All': [
@@ -481,9 +496,7 @@ class YoutubeService {
         } catch (_) {}
       }
 
-      if (subscriberCount == null) {
-        subscriberCount = await fetchChannelSubscribers(channelId);
-      }
+      subscriberCount ??= await fetchChannelSubscribers(channelId);
     }
 
     if (uploads.isEmpty) {
@@ -653,6 +666,21 @@ class YoutubeService {
     return searchVideos(channelId);
   }
 
+  Future<StreamResolutionResult> fetchStreamsFast(String videoId) async {
+    final cached = _streamCache[videoId];
+    if (cached != null && cached.defaultUrl != null) return cached;
+    final res = await _fetchAvailableStreams(videoId);
+    final result = StreamResolutionResult(
+      defaultUrl: res.defaultUrl,
+      qualityStreams: res.qualityStreams,
+      qualities: res.qualities,
+    );
+    if (result.defaultUrl != null) {
+      _streamCache[videoId] = result;
+    }
+    return result;
+  }
+
   Future<PlaybackDetails> resolvePlaybackDetails(
     String videoId, {
     String? channelId,
@@ -671,7 +699,6 @@ class YoutubeService {
         _innerTubeLiveChat(videoId)
       else
         Future<List<LiveChatMessage>>.value(const []),
-      _fetchAvailableStreams(videoId),
     ]);
 
     final meta = results[0] as ({String? description, String? likes, bool isLive, String? channelId})?;
@@ -680,11 +707,6 @@ class YoutubeService {
     final commentsPage = results[3] as CommentsPage;
     var subs = results[4] as String?;
     var liveChat = results[5] as List<LiveChatMessage>;
-    final streams = results[6] as ({
-      String? defaultUrl,
-      Map<String, StreamTrackOption> qualityStreams,
-      List<String> qualities,
-    });
 
     if (subs == null && meta?.channelId != null) {
       subs = await fetchChannelSubscribers(meta!.channelId!);
@@ -698,15 +720,12 @@ class YoutubeService {
     }
 
     return PlaybackDetails(
-      streamUrl: streams.defaultUrl,
-      qualityStreams: streams.qualityStreams,
       description: meta?.description,
       likesCount: ryd?.likes ?? meta?.likes,
       dislikesCount: ryd?.dislikes,
       subscriberCount: subs,
       channelAvatarUrl: channelAvatarUrl,
       isLive: isLive,
-      availableQualities: streams.qualities,
       sponsorSegments: segments,
       comments: commentsPage.comments,
       commentsNextToken: commentsPage.nextToken,
@@ -732,12 +751,13 @@ class YoutubeService {
                 YoutubeApiClient.ios,
                 YoutubeApiClient.androidSdkless,
               ],
+              requireWatchPage: false,
             )
-            .timeout(const Duration(seconds: 8));
+            .timeout(const Duration(seconds: 6));
       } catch (_) {
         manifest = await _yt.videos.streamsClient
-            .getManifest(videoId)
-            .timeout(const Duration(seconds: 8));
+            .getManifest(videoId, requireWatchPage: false)
+            .timeout(const Duration(seconds: 6));
       }
 
       final qualityStreams = <String, StreamTrackOption>{};
@@ -779,8 +799,35 @@ class YoutubeService {
 
       String? defaultUrl;
       if (manifest.hls.isNotEmpty) {
-        defaultUrl = manifest.hls.first.url.toString();
-        qualityStreams['Auto'] = StreamTrackOption(videoUrl: defaultUrl);
+        final hlsVideos = manifest.hls.whereType<VideoStreamInfo>().toList();
+        for (final hls in hlsVideos) {
+          final h = hls.videoResolution.height;
+          if (h > 0) {
+            final label = '${h}p';
+            qualityStreams[label] = StreamTrackOption(
+              videoUrl: hls.url.toString(),
+              isHls: true,
+            );
+            heightByLabel[label] = h;
+          }
+        }
+        sortedLabels
+          ..clear()
+          ..addAll(qualityStreams.keys)
+          ..sort((a, b) =>
+              (heightByLabel[b] ?? 0).compareTo(heightByLabel[a] ?? 0));
+        if (bestAudioUrl != null) {
+          qualityStreams['Audio only'] = StreamTrackOption(videoUrl: bestAudioUrl);
+          sortedLabels.add('Audio only');
+        }
+        final preferredHls = hlsVideos.where(
+          (h) => h.videoResolution.height <= 1080 && h.videoResolution.height > 0,
+        ).firstOrNull;
+        defaultUrl = (preferredHls ?? manifest.hls.first).url.toString();
+        qualityStreams['Auto'] = StreamTrackOption(
+          videoUrl: defaultUrl,
+          isHls: true,
+        );
       } else if (sortedLabels.isNotEmpty) {
         final preferred = sortedLabels.firstWhere(
           (l) => (heightByLabel[l] ?? 0) <= 1080 && (heightByLabel[l] ?? 0) > 0,
@@ -1048,7 +1095,7 @@ class YoutubeService {
 
       final token = _findCommentsToken(jsonDecode(firstRes.body));
       if (token == null) return const CommentsPage();
-      return fetchMoreComments(token);
+      return await fetchMoreComments(token);
     } catch (_) {
       return const CommentsPage();
     }

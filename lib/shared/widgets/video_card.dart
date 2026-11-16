@@ -178,6 +178,7 @@ class _ThumbnailHeader extends StatelessWidget {
             Image.network(
               thumbUrl,
               fit: BoxFit.cover,
+              cacheWidth: 640,
               errorBuilder: (_, __, ___) => fallback,
             )
           else

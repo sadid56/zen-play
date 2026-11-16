@@ -6,6 +6,7 @@ import 'package:zenplay/core/models/channel_info.dart';
 import 'package:zenplay/core/models/video_item.dart';
 import 'package:zenplay/core/state/zenplay_controller.dart';
 import 'package:zenplay/shared/widgets/channel_avatar.dart';
+import 'package:zenplay/shared/widgets/option_picker_sheet.dart';
 import 'package:zenplay/shared/widgets/save_to_folder_sheet.dart';
 import 'package:zenplay/shared/widgets/video_card.dart';
 import 'package:zenplay/shared/widgets/video_skeleton.dart';
@@ -215,63 +216,24 @@ class _WatchScreenState extends State<WatchScreen> {
   }
 
   void _showSleepTimerSheet(BuildContext context) {
-    const options = <int?>[null, 15, 30, 60];
-    showModalBottomSheet<void>(
+    showOptionPickerSheet<int?>(
       context: context,
-      builder: (_) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          padding: const EdgeInsets.symmetric(vertical: 12),
-          children: [
-            const ListTile(
-              title: Text(
-                'Sleep timer',
-                style: TextStyle(fontWeight: FontWeight.w700),
-              ),
-            ),
-            for (final mins in options)
-              ListTile(
-                title: Text(mins == null ? 'Off' : '$mins minutes'),
-                trailing: widget.controller.sleepTimerMinutes == mins
-                    ? const Icon(Icons.check_rounded)
-                    : null,
-                onTap: () {
-                  widget.controller.setSleepTimer(mins);
-                  Navigator.pop(context);
-                },
-              ),
-          ],
-        ),
-      ),
+      title: 'Sleep timer',
+      options: const <int?>[null, 15, 30, 60],
+      selected: widget.controller.sleepTimerMinutes,
+      labelBuilder: (mins) => mins == null ? 'Off' : '$mins minutes',
+      onSelected: widget.controller.setSleepTimer,
     );
   }
 
   void _showQualitySheet(BuildContext context) {
-    final qualities = widget.controller.availableQualities;
-    showModalBottomSheet<void>(
+    showOptionPickerSheet<String>(
       context: context,
-      builder: (_) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          padding: const EdgeInsets.symmetric(vertical: 12),
-          children: [
-            const ListTile(
-              title: Text('Quality', style: TextStyle(fontWeight: FontWeight.w700)),
-            ),
-            for (final q in qualities)
-              ListTile(
-                title: Text(q == 'Auto' ? 'Auto (recommended)' : q),
-                trailing: widget.controller.selectedQuality == q
-                    ? const Icon(Icons.check_rounded)
-                    : null,
-                onTap: () {
-                  widget.controller.setQuality(q);
-                  Navigator.pop(context);
-                },
-              ),
-          ],
-        ),
-      ),
+      title: 'Quality',
+      options: widget.controller.availableQualities,
+      selected: widget.controller.selectedQuality,
+      labelBuilder: (q) => q == 'Auto' ? 'Auto (recommended)' : q,
+      onSelected: widget.controller.setQuality,
     );
   }
 
@@ -355,31 +317,13 @@ class _WatchScreenState extends State<WatchScreen> {
   }
 
   void _showSpeedSheet(BuildContext context) {
-    const speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
-    showModalBottomSheet<void>(
+    showOptionPickerSheet<double>(
       context: context,
-      builder: (_) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          padding: const EdgeInsets.symmetric(vertical: 12),
-          children: [
-            const ListTile(
-              title: Text('Playback speed', style: TextStyle(fontWeight: FontWeight.w700)),
-            ),
-            for (final s in speeds)
-              ListTile(
-                title: Text('${s}x'),
-                trailing: widget.controller.playbackSpeed == s
-                    ? const Icon(Icons.check_rounded)
-                    : null,
-                onTap: () {
-                  widget.controller.setPlaybackSpeed(s);
-                  Navigator.pop(context);
-                },
-              ),
-          ],
-        ),
-      ),
+      title: 'Playback speed',
+      options: const [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0],
+      selected: widget.controller.playbackSpeed,
+      labelBuilder: (s) => '${s}x',
+      onSelected: widget.controller.setPlaybackSpeed,
     );
   }
 
@@ -943,6 +887,7 @@ class _WatchScreenState extends State<WatchScreen> {
                         isPlaying: widget.controller.isPlaying,
                         isMuted: widget.controller.isMuted,
                         isFullscreen: _isFullscreen,
+                        playbackError: widget.controller.playbackError,
                         showSponsorBlock: widget.controller.sponsorBlockEnabled &&
                             video.hasSponsorBlock,
                         showOverlay: _showOverlay && !_isInPipMode,
@@ -950,6 +895,7 @@ class _WatchScreenState extends State<WatchScreen> {
                             widget.controller.playbackProgressNotifier,
                         formatDuration: _formatDuration,
                         onTapSurface: _toggleOverlay,
+                        onRetry: () => widget.controller.playVideo(video),
                         onMinimize: _isFullscreen
                             ? _toggleFullscreen
                             : widget.controller.minimizeWatch,
@@ -1296,11 +1242,13 @@ class _NativePlayerSurface extends StatelessWidget {
     required this.isPlaying,
     required this.isMuted,
     required this.isFullscreen,
+    required this.playbackError,
     required this.showSponsorBlock,
     required this.showOverlay,
     required this.progressListenable,
     required this.formatDuration,
     required this.onTapSurface,
+    required this.onRetry,
     required this.onMinimize,
     required this.onTogglePlay,
     required this.onToggleMute,
@@ -1317,11 +1265,13 @@ class _NativePlayerSurface extends StatelessWidget {
   final bool isPlaying;
   final bool isMuted;
   final bool isFullscreen;
+  final String? playbackError;
   final bool showSponsorBlock;
   final bool showOverlay;
   final ValueNotifier<double> progressListenable;
   final String Function(Duration) formatDuration;
   final VoidCallback onTapSurface;
+  final VoidCallback onRetry;
   final VoidCallback onMinimize;
   final VoidCallback onTogglePlay;
   final VoidCallback onToggleMute;
@@ -1379,8 +1329,33 @@ class _NativePlayerSurface extends StatelessWidget {
                 ],
               ),
               if (!isReady)
-                const Center(
-                  child: CircularProgressIndicator(color: Colors.white),
+                Center(
+                  child: playbackError != null
+                      ? Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 12,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.black87,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                playbackError!,
+                                style: const TextStyle(color: Colors.white),
+                              ),
+                              const SizedBox(height: 8),
+                              FilledButton.tonal(
+                                onPressed: onRetry,
+                                child: const Text('Retry'),
+                              ),
+                            ],
+                          ),
+                        )
+                      : const CircularProgressIndicator(color: Colors.white),
                 )
               else if (showOverlay) ...[
                 Container(color: Colors.black26),
@@ -1592,6 +1567,7 @@ class _CommentAvatar extends StatelessWidget {
         url,
         width: radius * 2,
         height: radius * 2,
+        cacheWidth: 120,
         fit: BoxFit.cover,
         errorBuilder: (_, __, ___) => fallback,
       ),

@@ -52,6 +52,7 @@ class MiniPlayerBar extends StatelessWidget {
                           ? Image.network(
                               thumbUrl,
                               fit: BoxFit.cover,
+                              cacheWidth: 200,
                               errorBuilder: (_, __, ___) => const Icon(
                                 Icons.play_arrow_rounded,
                                 color: Colors.white,

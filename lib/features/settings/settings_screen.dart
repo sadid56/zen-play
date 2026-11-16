@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:zenplay/core/state/zenplay_controller.dart';
+import 'package:zenplay/shared/widgets/option_picker_sheet.dart';
 import 'package:zenplay/shared/widgets/zenplay_logo.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -247,79 +248,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _pickTheme(BuildContext context, ZenPlayController c) {
-    showModalBottomSheet<void>(
+    showOptionPickerSheet<ThemeMode>(
       context: context,
-      builder: (_) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const ListTile(
-              title: Text('Choose theme', style: TextStyle(fontWeight: FontWeight.w700)),
-            ),
-            for (final mode in ThemeMode.values)
-              ListTile(
-                title: Text(_themeLabel(mode)),
-                trailing: c.themeMode == mode ? const Icon(Icons.check_rounded) : null,
-                onTap: () {
-                  c.setThemeMode(mode);
-                  Navigator.pop(context);
-                },
-              ),
-          ],
-        ),
-      ),
+      title: 'Choose theme',
+      options: ThemeMode.values,
+      selected: c.themeMode,
+      labelBuilder: _themeLabel,
+      onSelected: c.setThemeMode,
     );
   }
 
   void _pickQuality(BuildContext context, ZenPlayController c) {
-    const qualities = ['Auto', '2160p', '1440p', '1080p', '720p', '480p', '360p'];
-    showModalBottomSheet<void>(
+    showOptionPickerSheet<String>(
       context: context,
-      builder: (_) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          children: [
-            const ListTile(
-              title: Text('Default resolution', style: TextStyle(fontWeight: FontWeight.w700)),
-            ),
-            for (final q in qualities)
-              ListTile(
-                title: Text(q == 'Auto' ? 'Auto (network adaptive)' : q),
-                trailing: c.selectedQuality == q ? const Icon(Icons.check_rounded) : null,
-                onTap: () {
-                  c.setQuality(q);
-                  Navigator.pop(context);
-                },
-              ),
-          ],
-        ),
-      ),
+      title: 'Default resolution',
+      options: const ['Auto', '2160p', '1440p', '1080p', '720p', '480p', '360p'],
+      selected: c.selectedQuality,
+      labelBuilder: (q) => q == 'Auto' ? 'Auto (network adaptive)' : q,
+      onSelected: c.setQuality,
     );
   }
 
   void _pickSpeed(BuildContext context, ZenPlayController c) {
-    const speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
-    showModalBottomSheet<void>(
+    showOptionPickerSheet<double>(
       context: context,
-      builder: (_) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          children: [
-            const ListTile(
-              title: Text('Default playback speed', style: TextStyle(fontWeight: FontWeight.w700)),
-            ),
-            for (final s in speeds)
-              ListTile(
-                title: Text('${s}x'),
-                trailing: c.playbackSpeed == s ? const Icon(Icons.check_rounded) : null,
-                onTap: () {
-                  c.setPlaybackSpeed(s);
-                  Navigator.pop(context);
-                },
-              ),
-          ],
-        ),
-      ),
+      title: 'Default playback speed',
+      options: const [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0],
+      selected: c.playbackSpeed,
+      labelBuilder: (s) => '${s}x',
+      onSelected: c.setPlaybackSpeed,
     );
   }
 }

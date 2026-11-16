@@ -20,15 +20,8 @@ class _SkeletonBoxState extends State<SkeletonBox>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 950),
-  )..repeat(reverse: true);
-
-  late final Animation<double> _opacity = Tween<double>(
-    begin: 0.42,
-    end: 0.92,
-  ).animate(
-    CurvedAnimation(parent: _controller, curve: Curves.easeInOutSine),
-  );
+    duration: const Duration(milliseconds: 1300),
+  )..repeat();
 
   @override
   void dispose() {
@@ -38,19 +31,36 @@ class _SkeletonBoxState extends State<SkeletonBox>
 
   @override
   Widget build(BuildContext context) {
-    final color = Theme.of(context).colorScheme.surfaceContainerHighest;
+    final scheme = Theme.of(context).colorScheme;
+    final base = scheme.surfaceContainerHighest;
+    final shine = Color.lerp(base, scheme.surface, 0.38)!;
 
     return RepaintBoundary(
-      child: FadeTransition(
-        opacity: _opacity,
+      child: AnimatedBuilder(
+        animation: _controller,
         child: Container(
           width: widget.width,
           height: widget.height,
           decoration: BoxDecoration(
-            color: color,
+            color: Colors.white,
             borderRadius: BorderRadius.circular(widget.borderRadius),
           ),
         ),
+        builder: (_, child) {
+          final slide = (_controller.value * 2.0) - 1.0;
+          return ShaderMask(
+            blendMode: BlendMode.srcATop,
+            shaderCallback: (bounds) {
+              return LinearGradient(
+                begin: Alignment(slide - 0.7, 0),
+                end: Alignment(slide + 0.7, 0),
+                colors: [base, shine, base],
+                stops: const [0.15, 0.5, 0.85],
+              ).createShader(bounds);
+            },
+            child: child,
+          );
+        },
       ),
     );
   }
@@ -61,11 +71,11 @@ class VideoCardSkeleton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return RepaintBoundary(
+    return const RepaintBoundary(
       child: Card(
         clipBehavior: Clip.antiAlias,
-        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        child: const Column(
+        margin: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             AspectRatio(

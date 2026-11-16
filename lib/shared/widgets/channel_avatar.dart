@@ -35,6 +35,7 @@ class ChannelAvatar extends StatelessWidget {
               url,
               width: radius * 2,
               height: radius * 2,
+              cacheWidth: 120,
               fit: BoxFit.cover,
               errorBuilder: (_, __, ___) => fallback,
             ),
