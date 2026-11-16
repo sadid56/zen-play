@@ -33,7 +33,7 @@ class _SkeletonBoxState extends State<SkeletonBox>
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final base = scheme.surfaceContainerHighest;
-    final shine = scheme.surfaceContainerLowest;
+    final shine = Color.lerp(base, scheme.surface, 0.45)!;
 
     return AnimatedBuilder(
       animation: _controller,

@@ -53,35 +53,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onTap: () => _pickTheme(context, c),
                 ),
               ],
-              if (_matches('Background playback', 'Keep audio playing when minimized') ||
-                  _matches('Default resolution', '1080p 720p 480p') ||
-                  _matches('Default playback speed', '0.75x 1.0x 1.5x 2.0x') ||
-                  _matches('Auto-play next video', 'Play up next automatically')) ...[
+              if (_matches('Picture-in-Picture', 'Continue playing when leaving app') ||
+                  _matches('Default resolution', c.selectedQuality) ||
+                  _matches('Default playback speed', '${c.playbackSpeed}x')) ...[
                 const _SectionLabel('Playback'),
-                if (_matches('Background playback', 'Keep audio playing when minimized'))
+                if (_matches('Picture-in-Picture', 'Continue playing when leaving app'))
                   SwitchListTile(
-                    secondary: const Icon(Icons.headphones_outlined),
-                    title: const Text('Background playback'),
-                    subtitle: const Text('Keep audio playing when minimized or screen off'),
+                    secondary: const Icon(Icons.picture_in_picture_alt_outlined),
+                    title: const Text('Picture-in-Picture'),
+                    subtitle: const Text('Continue playing when leaving app'),
                     value: c.backgroundPlayEnabled,
                     onChanged: c.setBackgroundPlay,
                   ),
-                if (_matches('Auto-play next video', 'Play up next automatically'))
-                  SwitchListTile(
-                    secondary: const Icon(Icons.skip_next_outlined),
-                    title: const Text('Auto-play next video'),
-                    subtitle: const Text('Automatically queue next video'),
-                    value: c.autoPlayEnabled,
-                    onChanged: c.setAutoPlay,
-                  ),
-                if (_matches('Default resolution', '1080p 720p 480p'))
+                if (_matches('Default resolution', c.selectedQuality))
                   ListTile(
                     leading: const Icon(Icons.high_quality_outlined),
                     title: const Text('Default resolution'),
-                    subtitle: Text(c.selectedQuality),
+                    subtitle: Text(
+                      c.selectedQuality == 'Auto'
+                          ? 'Auto (network adaptive)'
+                          : c.selectedQuality,
+                    ),
                     onTap: () => _pickQuality(context, c),
                   ),
-                if (_matches('Default playback speed', '0.75x 1.0x 1.5x 2.0x'))
+                if (_matches('Default playback speed', '${c.playbackSpeed}x'))
                   ListTile(
                     leading: const Icon(Icons.speed_outlined),
                     title: const Text('Default playback speed'),
@@ -89,70 +84,71 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     onTap: () => _pickSpeed(context, c),
                   ),
               ],
-              if (_matches('Hide Shorts', 'Keep feeds focused on full videos') ||
-                  _matches('Clear watch history', 'Remove recent 10 watched videos') ||
-                  _matches('Clear search history', 'Remove saved search queries')) ...[
-                const _SectionLabel('Feed & Privacy'),
-                if (_matches('Hide Shorts', 'Keep feeds focused on full videos'))
-                  SwitchListTile(
-                    secondary: const Icon(Icons.visibility_off_outlined),
-                    title: const Text('Hide Shorts'),
-                    subtitle: const Text('Keep feeds focused on full videos'),
-                    value: c.hideShortsEnabled,
-                    onChanged: c.setHideShorts,
-                  ),
-                if (_matches('Clear watch history', 'Remove recent 10 watched videos'))
-                  ListTile(
-                    leading: const Icon(Icons.history_outlined),
-                    title: const Text('Clear watch history'),
-                    subtitle: const Text('Remove recent 10 watched videos'),
-                    onTap: () {
-                      c.clearHistory();
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Watch history cleared')),
-                      );
-                    },
-                  ),
-                if (_matches('Clear search history', 'Remove saved search queries'))
-                  ListTile(
-                    leading: const Icon(Icons.search_off_outlined),
-                    title: const Text('Clear search history'),
-                    subtitle: const Text('Remove recent search suggestions'),
-                    onTap: () {
-                      c.clearSearchHistory();
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Search history cleared')),
-                      );
-                    },
-                  ),
-              ],
               if (_matches('SponsorBlock', 'Skip sponsor segments') ||
-                  _matches('DeArrow', 'Clean titles and thumbnails') ||
                   _matches('Return YouTube Dislike', 'Show estimated dislike counts')) ...[
-                const _SectionLabel('Community Enhancements'),
+                const _SectionLabel('Enhancements'),
                 if (_matches('SponsorBlock', 'Skip sponsor segments'))
                   SwitchListTile(
                     secondary: const Icon(Icons.fast_forward_outlined),
                     title: const Text('SponsorBlock'),
-                    subtitle: const Text('Skip sponsor, intro, and outro segments'),
+                    subtitle: const Text('Automatically skip sponsor segments'),
                     value: c.sponsorBlockEnabled,
                     onChanged: c.setSponsorBlock,
-                  ),
-                if (_matches('DeArrow', 'Clean titles and thumbnails'))
-                  SwitchListTile(
-                    secondary: const Icon(Icons.auto_fix_high_outlined),
-                    title: const Text('DeArrow'),
-                    subtitle: const Text('Use community-cleaned titles and thumbnails'),
-                    value: c.deArrowEnabled,
-                    onChanged: c.setDeArrow,
                   ),
                 if (_matches('Return YouTube Dislike', 'Show estimated dislike counts'))
                   SwitchListTile(
                     secondary: const Icon(Icons.thumb_down_outlined),
                     title: const Text('Return YouTube Dislike'),
-                    subtitle: const Text('Show estimated dislike counts on watch page'),
+                    subtitle: const Text('Show estimated dislike counts'),
                     value: c.returnDislikeEnabled,
                     onChanged: c.setReturnDislike,
+                  ),
+              ],
+              if (_matches('Clear watch history', 'recent videos') ||
+                  _matches('Clear search history', 'saved queries') ||
+                  _matches('Clear downloads', 'offline videos')) ...[
+                const _SectionLabel('Storage & History'),
+                if (_matches('Clear watch history', 'recent videos'))
+                  ListTile(
+                    leading: const Icon(Icons.history_outlined),
+                    title: const Text('Clear watch history'),
+                    subtitle: Text('${c.historyVideos.length} recent videos'),
+                    onTap: c.historyVideos.isEmpty
+                        ? null
+                        : () {
+                            c.clearHistory();
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Watch history cleared')),
+                            );
+                          },
+                  ),
+                if (_matches('Clear search history', 'saved queries'))
+                  ListTile(
+                    leading: const Icon(Icons.search_off_outlined),
+                    title: const Text('Clear search history'),
+                    subtitle: Text('${c.recentSearches.length} saved queries'),
+                    onTap: c.recentSearches.isEmpty
+                        ? null
+                        : () {
+                            c.clearSearchHistory();
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Search history cleared')),
+                            );
+                          },
+                  ),
+                if (_matches('Clear downloads', 'offline videos'))
+                  ListTile(
+                    leading: const Icon(Icons.delete_outline_rounded),
+                    title: const Text('Clear downloads'),
+                    subtitle: Text('${c.downloadedVideos.length} offline videos'),
+                    onTap: c.downloadedVideos.isEmpty
+                        ? null
+                        : () {
+                            c.clearDownloads();
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Downloads cleared')),
+                            );
+                          },
                   ),
               ],
               if (_matches('ZenPlay', 'Android & iOS')) ...[
@@ -204,7 +200,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _pickQuality(BuildContext context, ZenPlayController c) {
-    const qualities = ['2160p 4K', '1440p', '1080p', '720p', '480p', '360p'];
+    const qualities = ['Auto', '2160p', '1440p', '1080p', '720p', '480p', '360p'];
     showModalBottomSheet<void>(
       context: context,
       builder: (_) => SafeArea(
@@ -216,7 +212,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             for (final q in qualities)
               ListTile(
-                title: Text(q),
+                title: Text(q == 'Auto' ? 'Auto (network adaptive)' : q),
                 trailing: c.selectedQuality == q ? const Icon(Icons.check_rounded) : null,
                 onTap: () {
                   c.setQuality(q);

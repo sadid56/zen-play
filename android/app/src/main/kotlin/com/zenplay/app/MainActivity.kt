@@ -20,6 +20,7 @@ class MainActivity : FlutterActivity() {
                 when (call.method) {
                     "setPipEnabled" -> {
                         pipEnabled = call.argument<Boolean>("enabled") ?: false
+                        updatePipParams()
                         result.success(null)
                     }
                     "enterPip" -> {
@@ -46,11 +47,26 @@ class MainActivity : FlutterActivity() {
         channel?.invokeMethod("onPipChanged", isInPictureInPictureMode)
     }
 
-    private fun triggerPip(): Boolean {
+    private fun buildPipParams(): PictureInPictureParams? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return null
+        val builder = PictureInPictureParams.Builder()
+            .setAspectRatio(Rational(16, 9))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setAutoEnterEnabled(pipEnabled)
+        }
+        return builder.build()
+    }
+
+    private fun updatePipParams() {
+        val params = buildPipParams() ?: return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val params = PictureInPictureParams.Builder()
-                .setAspectRatio(Rational(16, 9))
-                .build()
+            setPictureInPictureParams(params)
+        }
+    }
+
+    private fun triggerPip(): Boolean {
+        val params = buildPipParams() ?: return false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             return enterPictureInPictureMode(params)
         }
         return false

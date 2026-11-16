@@ -25,11 +25,21 @@ class ChannelScreen extends StatefulWidget {
 
 class _ChannelScreenState extends State<ChannelScreen> {
   late Future<List<VideoItem>> _uploadsFuture;
+  String? _subscriberCount;
 
   @override
   void initState() {
     super.initState();
+    _subscriberCount = widget.channel.subscriberCount;
     _uploadsFuture = widget.controller.fetchChannelUploads(widget.channel.id);
+    _loadSubscribers();
+  }
+
+  Future<void> _loadSubscribers() async {
+    final subs = await widget.controller.fetchChannelSubscribers(widget.channel.id);
+    if (subs != null && mounted) {
+      setState(() => _subscriberCount = subs);
+    }
   }
 
   @override
@@ -73,7 +83,7 @@ class _ChannelScreenState extends State<ChannelScreen> {
                             ),
                             const SizedBox(height: 2),
                             Text(
-                              '${widget.channel.handle} • ${widget.channel.subscriberCount}',
+                              '${widget.channel.handle} • ${_subscriberCount ?? widget.channel.subscriberCount}',
                               style: Theme.of(context).textTheme.bodySmall,
                             ),
                           ],

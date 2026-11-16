@@ -11,8 +11,10 @@ class PlaybackDetails {
     this.dislikesCount,
     this.subscriberCount,
     this.isLive = false,
+    this.availableQualities = const ['Auto'],
     this.sponsorSegments = const [],
     this.comments = const [],
+    this.liveChatMessages = const [],
   });
 
   final String? description;
@@ -20,8 +22,10 @@ class PlaybackDetails {
   final String? dislikesCount;
   final String? subscriberCount;
   final bool isLive;
+  final List<String> availableQualities;
   final List<SponsorSegment> sponsorSegments;
   final List<CommentItem> comments;
+  final List<LiveChatMessage> liveChatMessages;
 }
 
 class YoutubeService {
@@ -288,8 +292,32 @@ class YoutubeService {
       final channel =
           await _yt.channels.get(channelId).timeout(const Duration(seconds: 6));
       final subs = channel.subscribersCount;
-      if (subs == null) return null;
-      return '${_formatCompactCount(subs)} subscribers';
+      if (subs != null) {
+        return '${_formatCompactCount(subs)} subscribers';
+      }
+    } catch (_) {}
+
+    if (!channelId.startsWith('UC')) return null;
+    try {
+      final response = await _http
+          .post(
+            Uri.https('www.youtube.com', '/youtubei/v1/browse'),
+            headers: const {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'context': {
+                'client': {
+                  'clientName': 'WEB',
+                  'clientVersion': '2.20241114.01.00',
+                  'hl': 'en',
+                  'gl': 'US',
+                },
+              },
+              'browseId': channelId,
+            }),
+          )
+          .timeout(const Duration(seconds: 6));
+      if (response.statusCode != 200) return null;
+      return _findSubscriberCount(jsonDecode(response.body));
     } catch (_) {
       return null;
     }
@@ -308,6 +336,7 @@ class YoutubeService {
   Future<PlaybackDetails> resolvePlaybackDetails(
     String videoId, {
     String? channelId,
+    bool isLiveHint = false,
   }) async {
     final results = await Future.wait([
       _fetchVideoMeta(videoId),
@@ -318,6 +347,11 @@ class YoutubeService {
         fetchChannelSubscribers(channelId)
       else
         Future<String?>.value(null),
+      if (isLiveHint)
+        _innerTubeLiveChat(videoId)
+      else
+        Future<List<LiveChatMessage>>.value(const []),
+      _fetchAvailableQualities(videoId),
     ]);
 
     final meta = results[0] as ({String? description, String? likes, bool isLive, String? channelId})?;
@@ -325,9 +359,16 @@ class YoutubeService {
     final ryd = results[2] as ({String? likes, String? dislikes})?;
     final comments = results[3] as List<CommentItem>;
     var subs = results[4] as String?;
+    var liveChat = results[5] as List<LiveChatMessage>;
+    final qualities = results[6] as List<String>;
 
     if (subs == null && meta?.channelId != null) {
       subs = await fetchChannelSubscribers(meta!.channelId!);
+    }
+    subs ??= await _fetchSubscriberCountFromWatch(videoId);
+    final isLive = meta?.isLive ?? isLiveHint;
+    if (isLive && liveChat.isEmpty && !isLiveHint) {
+      liveChat = await _innerTubeLiveChat(videoId);
     }
 
     return PlaybackDetails(
@@ -335,10 +376,83 @@ class YoutubeService {
       likesCount: ryd?.likes ?? meta?.likes,
       dislikesCount: ryd?.dislikes,
       subscriberCount: subs,
-      isLive: meta?.isLive ?? false,
+      isLive: isLive,
+      availableQualities: qualities,
       sponsorSegments: segments,
       comments: comments,
+      liveChatMessages: liveChat,
     );
+  }
+
+  Future<List<String>> _fetchAvailableQualities(String videoId) async {
+    try {
+      final manifest = await _yt.videos.streamsClient
+          .getManifest(videoId)
+          .timeout(const Duration(seconds: 6));
+      final heights = <int>{};
+      for (final s in manifest.videoOnly) {
+        final h = s.videoResolution.height;
+        if (h > 0) heights.add(h);
+      }
+      for (final s in manifest.muxed) {
+        final h = s.videoResolution.height;
+        if (h > 0) heights.add(h);
+      }
+      final sorted = heights.toList()..sort((a, b) => b.compareTo(a));
+      return ['Auto', ...sorted.map((h) => '${h}p')];
+    } catch (_) {
+      return const ['Auto', '1080p', '720p', '480p', '360p'];
+    }
+  }
+
+  Future<String?> _fetchSubscriberCountFromWatch(String videoId) async {
+    try {
+      final res = await _http
+          .post(
+            Uri.https('www.youtube.com', '/youtubei/v1/next'),
+            headers: const {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'context': {
+                'client': {
+                  'clientName': 'WEB',
+                  'clientVersion': '2.20241114.01.00',
+                  'hl': 'en',
+                  'gl': 'US',
+                },
+              },
+              'videoId': videoId,
+            }),
+          )
+          .timeout(const Duration(seconds: 6));
+      if (res.statusCode != 200) return null;
+      return _findSubscriberCount(jsonDecode(res.body));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String? _findSubscriberCount(dynamic node) {
+    if (node is Map<String, dynamic>) {
+      final owner = node['videoOwnerRenderer'];
+      if (owner is Map<String, dynamic>) {
+        final text = _readSimpleText(owner['subscriberCountText']);
+        if (text != null && text.isNotEmpty) return text;
+      }
+      final subText = _readSimpleText(node['subscriberCountText']);
+      if (subText != null && subText.toLowerCase().contains('subscriber')) {
+        return subText;
+      }
+      for (final value in node.values) {
+        final found = _findSubscriberCount(value);
+        if (found != null) return found;
+      }
+    } else if (node is List) {
+      for (final item in node) {
+        final found = _findSubscriberCount(item);
+        if (found != null) return found;
+      }
+    }
+    return null;
   }
 
   Future<({String? description, String? likes, bool isLive, String? channelId})?>
@@ -566,6 +680,107 @@ class YoutubeService {
     } else if (node is List) {
       for (final item in node) {
         _collectComments(item, out);
+      }
+    }
+  }
+
+  Future<List<LiveChatMessage>> _innerTubeLiveChat(String videoId) async {
+    try {
+      const headers = {'Content-Type': 'application/json'};
+      const clientContext = {
+        'client': {
+          'clientName': 'WEB',
+          'clientVersion': '2.20241114.01.00',
+          'hl': 'en',
+          'gl': 'US',
+        },
+      };
+
+      final nextRes = await _http
+          .post(
+            Uri.https('www.youtube.com', '/youtubei/v1/next'),
+            headers: headers,
+            body: jsonEncode({
+              'context': clientContext,
+              'videoId': videoId,
+            }),
+          )
+          .timeout(const Duration(seconds: 8));
+      if (nextRes.statusCode != 200) return const [];
+
+      final token = _findLiveChatToken(jsonDecode(nextRes.body));
+      if (token == null) return const [];
+
+      final chatRes = await _http
+          .post(
+            Uri.https('www.youtube.com', '/youtubei/v1/live_chat/get_live_chat'),
+            headers: headers,
+            body: jsonEncode({
+              'context': clientContext,
+              'continuation': token,
+            }),
+          )
+          .timeout(const Duration(seconds: 8));
+      if (chatRes.statusCode != 200) return const [];
+
+      final messages = <LiveChatMessage>[];
+      _collectLiveChatMessages(jsonDecode(chatRes.body), messages);
+      return messages;
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  String? _findLiveChatToken(dynamic node) {
+    if (node is Map<String, dynamic>) {
+      final lc = node['liveChatRenderer'];
+      if (lc is Map<String, dynamic>) {
+        final continuations = lc['continuations'] as List?;
+        if (continuations != null && continuations.isNotEmpty) {
+          final token =
+              continuations.first['reloadContinuationData']?['continuation']
+                  as String?;
+          if (token != null && token.isNotEmpty) return token;
+        }
+      }
+      for (final value in node.values) {
+        final found = _findLiveChatToken(value);
+        if (found != null) return found;
+      }
+    } else if (node is List) {
+      for (final item in node) {
+        final found = _findLiveChatToken(item);
+        if (found != null) return found;
+      }
+    }
+    return null;
+  }
+
+  void _collectLiveChatMessages(dynamic node, List<LiveChatMessage> out) {
+    if (out.length >= 40) return;
+    if (node is Map<String, dynamic>) {
+      final msg = node['liveChatTextMessageRenderer'];
+      if (msg is Map<String, dynamic>) {
+        final author = _readSimpleText(msg['authorName']) ?? 'Viewer';
+        final text = _readRuns(msg['message']) ?? '';
+        final time = _readSimpleText(msg['timestampText']) ?? 'Live';
+        if (text.isNotEmpty) {
+          out.add(
+            LiveChatMessage(
+              author: author,
+              message: text,
+              timestampLabel: time,
+            ),
+          );
+        }
+        return;
+      }
+      for (final value in node.values) {
+        _collectLiveChatMessages(value, out);
+      }
+    } else if (node is List) {
+      for (final item in node) {
+        _collectLiveChatMessages(item, out);
       }
     }
   }

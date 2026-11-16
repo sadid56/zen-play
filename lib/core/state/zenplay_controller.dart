@@ -34,12 +34,13 @@ class ZenPlayController extends ChangeNotifier {
   bool _isLoadingWatchDetails = false;
 
   VideoItem? _activeVideo;
+  List<String> _availableQualities = const ['Auto'];
   List<SponsorSegment> _activeSponsorSegments = const [];
   final List<LiveChatMessage> _liveChatMessages = [];
   bool _isPlaying = false;
   double _playbackProgress = 0.0;
   double _playbackSpeed = 1.0;
-  String _selectedQuality = '1080p';
+  String _selectedQuality = 'Auto';
 
   bool _sponsorBlockEnabled = true;
   bool _deArrowEnabled = true;
@@ -68,6 +69,7 @@ class ZenPlayController extends ChangeNotifier {
   bool get isLoadingSearch => _isLoadingSearch;
   bool get isLoadingWatchDetails => _isLoadingWatchDetails;
   VideoItem? get activeVideo => _activeVideo;
+  List<String> get availableQualities => List.unmodifiable(_availableQualities);
   List<SponsorSegment> get activeSponsorSegments => _activeSponsorSegments;
   List<LiveChatMessage> get liveChatMessages => List.unmodifiable(_liveChatMessages);
   bool get isPlaying => _isPlaying;
@@ -217,6 +219,11 @@ class ZenPlayController extends ChangeNotifier {
     }
   }
 
+  Future<String?> fetchChannelSubscribers(String channelId) {
+    if (!enableRemoteFetch) return Future.value(null);
+    return _youtube.fetchChannelSubscribers(channelId);
+  }
+
   Future<List<VideoItem>> fetchChannelUploads(String channelId) async {
     if (!enableRemoteFetch) {
       return VideoRepository.videos
@@ -288,6 +295,7 @@ class ZenPlayController extends ChangeNotifier {
 
   Future<void> playVideo(VideoItem video) async {
     _activeVideo = video;
+    _availableQualities = const ['Auto'];
     _activeSponsorSegments = const [];
     _seedLiveChat(video);
     _isPlaying = true;
@@ -310,9 +318,16 @@ class ZenPlayController extends ChangeNotifier {
       final details = await _youtube.resolvePlaybackDetails(
         video.id,
         channelId: video.channel.id,
+        isLiveHint: video.isLive,
       );
       if (_activeVideo?.id != video.id) return;
+      _availableQualities = details.availableQualities;
       _activeSponsorSegments = details.sponsorSegments;
+      if (details.liveChatMessages.isNotEmpty) {
+        _liveChatMessages
+          ..clear()
+          ..addAll(details.liveChatMessages);
+      }
       _activeVideo = video.copyWith(
         channel: details.subscriberCount != null
             ? video.channel.copyWith(subscriberCount: details.subscriberCount)
@@ -338,6 +353,11 @@ class ZenPlayController extends ChangeNotifier {
 
   void clearSearchHistory() {
     _recentSearches.clear();
+    notifyListeners();
+  }
+
+  void clearDownloads() {
+    _downloadedQualities.clear();
     notifyListeners();
   }
 
