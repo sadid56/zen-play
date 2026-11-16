@@ -185,7 +185,12 @@ class _ThumbnailHeader extends StatelessWidget {
           Positioned(
             right: 10,
             bottom: 10,
-            child: _OverlayPill(label: video.duration),
+            child: _OverlayPill(
+              label: video.isLive ? 'LIVE' : video.duration,
+              backgroundColor: video.isLive
+                  ? Colors.red.shade700.withValues(alpha: 0.92)
+                  : null,
+            ),
           ),
         ],
       ),
@@ -194,16 +199,20 @@ class _ThumbnailHeader extends StatelessWidget {
 }
 
 class _OverlayPill extends StatelessWidget {
-  const _OverlayPill({required this.label});
+  const _OverlayPill({
+    required this.label,
+    this.backgroundColor,
+  });
 
   final String label;
+  final Color? backgroundColor;
 
   @override
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.72),
+        color: backgroundColor ?? Colors.black.withValues(alpha: 0.72),
         borderRadius: BorderRadius.circular(6),
       ),
       child: Text(

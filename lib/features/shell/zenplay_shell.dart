@@ -6,6 +6,7 @@ import 'package:zenplay/features/channel/channel_screen.dart';
 import 'package:zenplay/features/downloads/downloads_screen.dart';
 import 'package:zenplay/features/history/history_screen.dart';
 import 'package:zenplay/features/home/home_screen.dart';
+import 'package:zenplay/features/saved/saved_screen.dart';
 import 'package:zenplay/features/search/search_screen.dart';
 import 'package:zenplay/features/settings/settings_screen.dart';
 import 'package:zenplay/features/watch/watch_screen.dart';
@@ -147,6 +148,11 @@ class _ZenPlayShellState extends State<ZenPlayShell> {
                 onOpenVideo: (video) => _openWatch(context, video),
                 onOpenChannel: (channel) => _openChannel(context, channel),
               ),
+              SavedScreen(
+                controller: widget.controller,
+                onOpenVideo: (video) => _openWatch(context, video),
+                onOpenChannel: (channel) => _openChannel(context, channel),
+              ),
               DownloadsScreen(
                 controller: widget.controller,
                 onOpenVideo: (video) => _openWatch(context, video),
@@ -179,6 +185,11 @@ class _ZenPlayShellState extends State<ZenPlayShell> {
                     icon: Icon(Icons.history_outlined),
                     selectedIcon: Icon(Icons.history_rounded),
                     label: 'History',
+                  ),
+                  NavigationDestination(
+                    icon: Icon(Icons.folder_outlined),
+                    selectedIcon: Icon(Icons.folder_rounded),
+                    label: 'Saved',
                   ),
                   NavigationDestination(
                     icon: Icon(Icons.download_outlined),

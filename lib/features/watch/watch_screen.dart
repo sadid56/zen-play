@@ -6,6 +6,7 @@ import 'package:zenplay/core/models/channel_info.dart';
 import 'package:zenplay/core/models/video_item.dart';
 import 'package:zenplay/core/state/zenplay_controller.dart';
 import 'package:zenplay/shared/widgets/channel_avatar.dart';
+import 'package:zenplay/shared/widgets/save_to_folder_sheet.dart';
 import 'package:zenplay/shared/widgets/video_card.dart';
 import 'package:zenplay/shared/widgets/video_skeleton.dart';
 
@@ -24,7 +25,10 @@ class WatchScreen extends StatefulWidget {
 }
 
 class _WatchScreenState extends State<WatchScreen> {
+  static const MethodChannel _pipChannel = MethodChannel('com.zenplay.app/pip');
+
   bool _descriptionExpanded = false;
+  bool _isInPipMode = false;
   YoutubePlayerController? _ytController;
   StreamSubscription<YoutubeVideoState>? _videoStateSub;
   String? _loadedVideoId;
@@ -33,19 +37,41 @@ class _WatchScreenState extends State<WatchScreen> {
   @override
   void initState() {
     super.initState();
+    _pipChannel.setMethodCallHandler(_handlePipCall);
     widget.controller.addListener(_syncPlayerWithState);
     _syncPlayerWithState();
   }
 
   @override
   void dispose() {
+    _setNativePipEnabled(false);
+    _pipChannel.setMethodCallHandler(null);
     widget.controller.removeListener(_syncPlayerWithState);
     _videoStateSub?.cancel();
     _ytController?.close();
     super.dispose();
   }
 
+  Future<dynamic> _handlePipCall(MethodCall call) async {
+    if (call.method == 'onPipChanged' && mounted) {
+      setState(() => _isInPipMode = call.arguments == true);
+    }
+  }
+
+  Future<void> _setNativePipEnabled(bool enabled) async {
+    try {
+      await _pipChannel.invokeMethod('setPipEnabled', {'enabled': enabled});
+    } catch (_) {}
+  }
+
+  Future<void> _enterPip() async {
+    try {
+      await _pipChannel.invokeMethod('enterPip');
+    } catch (_) {}
+  }
+
   void _syncPlayerWithState() {
+    _setNativePipEnabled(widget.controller.backgroundPlayEnabled);
     final video = widget.controller.activeVideo;
     if (video == null) return;
 
@@ -429,6 +455,17 @@ class _WatchScreenState extends State<WatchScreen> {
         final upNext = widget.controller.upNextFor(video);
         final player = _ytController;
 
+        if (_isInPipMode) {
+          return Scaffold(
+            backgroundColor: Colors.black,
+            body: Center(
+              child: player != null
+                  ? YoutubePlayer(controller: player)
+                  : const CircularProgressIndicator(),
+            ),
+          );
+        }
+
         return Scaffold(
           body: SafeArea(
             child: Column(
@@ -473,6 +510,14 @@ class _WatchScreenState extends State<WatchScreen> {
                                 ),
                               ),
                             const Spacer(),
+                            IconButton(
+                              onPressed: _enterPip,
+                              icon: const Icon(
+                                Icons.picture_in_picture_alt_rounded,
+                                size: 20,
+                              ),
+                              tooltip: 'Picture-in-Picture',
+                            ),
                             TextButton(
                               onPressed: () => _showSpeedSheet(context),
                               child: Text('${widget.controller.playbackSpeed}x'),
@@ -560,69 +605,114 @@ class _WatchScreenState extends State<WatchScreen> {
                           scrollDirection: Axis.horizontal,
                           padding: const EdgeInsets.symmetric(horizontal: 16),
                           children: [
-                            ActionChip(
-                              avatar: Icon(
-                                widget.controller.isLiked(video.id)
-                                    ? Icons.thumb_up
-                                    : Icons.thumb_up_outlined,
-                                size: 18,
-                              ),
-                              label: Text(
-                                widget.controller.returnDislikeEnabled
-                                    ? '${video.likesCount} / ${video.dislikesCount}'
-                                    : video.likesCount,
-                              ),
-                              onPressed: () => widget.controller.toggleLike(video.id),
+                            _LikeDislikePill(
+                              likesCount: video.likesCount,
+                              dislikesCount: widget.controller.returnDislikeEnabled
+                                  ? video.dislikesCount
+                                  : null,
+                              isLiked: widget.controller.isLiked(video.id),
+                              isDisliked: widget.controller.isDisliked(video.id),
+                              onLikeTap: () => widget.controller.toggleLike(video.id),
+                              onDislikeTap: () =>
+                                  widget.controller.toggleDislike(video.id),
                             ),
                             const SizedBox(width: 8),
-                            ActionChip(
-                              avatar: const Icon(Icons.share_outlined, size: 18),
-                              label: const Text('Share'),
-                              onPressed: () => _shareVideo(context, video),
+                            _ActionPill(
+                              icon: Icons.share_outlined,
+                              label: 'Share',
+                              onTap: () => _shareVideo(context, video),
                             ),
                             const SizedBox(width: 8),
-                            ActionChip(
-                              avatar: Icon(
-                                widget.controller.isDownloaded(video.id)
-                                    ? Icons.download_done
-                                    : Icons.download_outlined,
-                                size: 18,
-                              ),
-                              label: Text(
-                                widget.controller.isDownloaded(video.id)
-                                    ? 'Saved (${widget.controller.downloadedQualityFor(video.id) ?? ''})'
-                                    : 'Download',
-                              ),
-                              onPressed: () => _showDownloadSheet(context, video),
+                            _ActionPill(
+                              icon: widget.controller.isDownloaded(video.id)
+                                  ? Icons.download_done_rounded
+                                  : Icons.download_outlined,
+                              label: widget.controller.isDownloaded(video.id)
+                                  ? 'Downloaded (${widget.controller.downloadedQualityFor(video.id) ?? ''})'
+                                  : 'Download',
+                              isActive: widget.controller.isDownloaded(video.id),
+                              onTap: () => _showDownloadSheet(context, video),
                             ),
                             const SizedBox(width: 8),
-                            ActionChip(
-                              avatar: Icon(
-                                widget.controller.isSaved(video.id)
-                                    ? Icons.bookmark
-                                    : Icons.bookmark_outline,
-                                size: 18,
+                            _ActionPill(
+                              icon: widget.controller.isSaved(video.id)
+                                  ? Icons.bookmark_rounded
+                                  : Icons.bookmark_add_outlined,
+                              label: widget.controller.isSaved(video.id)
+                                  ? 'Saved'
+                                  : 'Save',
+                              isActive: widget.controller.isSaved(video.id),
+                              onTap: () => showSaveToFolderSheet(
+                                context,
+                                widget.controller,
+                                video.id,
                               ),
-                              label: Text(
-                                widget.controller.isSaved(video.id)
-                                    ? 'Watch later'
-                                    : 'Save',
-                              ),
-                              onPressed: () => widget.controller.toggleWatchLater(video.id),
                             ),
                             const SizedBox(width: 8),
-                            ActionChip(
-                              avatar: const Icon(Icons.comment_outlined, size: 18),
-                              label: Text('Comments (${video.comments.length})'),
-                              onPressed: () => _showCommentsSheet(context),
+                            _ActionPill(
+                              icon: Icons.comment_outlined,
+                              label: 'Comments (${video.comments.length})',
+                              onTap: () => _showCommentsSheet(context),
                             ),
-                            const SizedBox(width: 8),
-                            ActionChip(
-                              avatar: const Icon(Icons.forum_outlined, size: 18),
-                              label: const Text('Live chat'),
-                              onPressed: () => _showLiveChatSheet(context),
-                            ),
+                            if (video.isLive) ...[
+                              const SizedBox(width: 8),
+                              _ActionPill(
+                                icon: Icons.forum_outlined,
+                                label: 'Live chat',
+                                onTap: () => _showLiveChatSheet(context),
+                              ),
+                            ],
                           ],
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                        child: Card(
+                          margin: EdgeInsets.zero,
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(16),
+                            onTap: () => _showCommentsSheet(context),
+                            child: Padding(
+                              padding: const EdgeInsets.all(14),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Text(
+                                        'Comments',
+                                        style: theme.textTheme.labelLarge?.copyWith(
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        '${video.comments.length}',
+                                        style: theme.textTheme.bodySmall?.copyWith(
+                                          color: scheme.onSurfaceVariant,
+                                        ),
+                                      ),
+                                      const Spacer(),
+                                      Icon(
+                                        Icons.unfold_more_rounded,
+                                        size: 18,
+                                        color: scheme.onSurfaceVariant,
+                                      ),
+                                    ],
+                                  ),
+                                  if (video.comments.isNotEmpty) ...[
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      video.comments.first.text,
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: theme.textTheme.bodySmall,
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                          ),
                         ),
                       ),
                       const SizedBox(height: 12),
@@ -724,6 +814,139 @@ class _WatchScreenState extends State<WatchScreen> {
           ),
         );
       },
+    );
+  }
+}
+
+class _LikeDislikePill extends StatelessWidget {
+  const _LikeDislikePill({
+    required this.likesCount,
+    required this.dislikesCount,
+    required this.isLiked,
+    required this.isDisliked,
+    required this.onLikeTap,
+    required this.onDislikeTap,
+  });
+
+  final String likesCount;
+  final String? dislikesCount;
+  final bool isLiked;
+  final bool isDisliked;
+  final VoidCallback onLikeTap;
+  final VoidCallback onDislikeTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final labelStyle = Theme.of(context).textTheme.labelLarge;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(22),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          InkWell(
+            borderRadius: const BorderRadius.horizontal(left: Radius.circular(22)),
+            onTap: onLikeTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              child: Row(
+                children: [
+                  Icon(
+                    isLiked ? Icons.thumb_up_rounded : Icons.thumb_up_outlined,
+                    size: 18,
+                    color: isLiked ? scheme.primary : scheme.onSurface,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    likesCount,
+                    style: labelStyle?.copyWith(
+                      color: isLiked ? scheme.primary : scheme.onSurface,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Container(
+            width: 1,
+            height: 20,
+            color: scheme.outlineVariant,
+          ),
+          InkWell(
+            borderRadius: const BorderRadius.horizontal(right: Radius.circular(22)),
+            onTap: onDislikeTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              child: Row(
+                children: [
+                  Icon(
+                    isDisliked ? Icons.thumb_down_rounded : Icons.thumb_down_outlined,
+                    size: 18,
+                    color: isDisliked ? scheme.primary : scheme.onSurface,
+                  ),
+                  if (dislikesCount != null) ...[
+                    const SizedBox(width: 6),
+                    Text(
+                      dislikesCount!,
+                      style: labelStyle?.copyWith(
+                        color: isDisliked ? scheme.primary : scheme.onSurface,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ActionPill extends StatelessWidget {
+  const _ActionPill({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.isActive = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final bool isActive;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final bg = isActive ? scheme.secondaryContainer : scheme.surfaceContainerHigh;
+    final fg = isActive ? scheme.onSecondaryContainer : scheme.onSurface;
+
+    return Material(
+      color: bg,
+      borderRadius: BorderRadius.circular(22),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(22),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 18, color: fg),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: Theme.of(context).textTheme.labelLarge?.copyWith(color: fg),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

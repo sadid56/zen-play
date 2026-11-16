@@ -20,8 +20,8 @@ class _SkeletonBoxState extends State<SkeletonBox>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 1100),
-  )..repeat(reverse: true);
+    duration: const Duration(milliseconds: 1400),
+  )..repeat();
 
   @override
   void dispose() {
@@ -33,17 +33,27 @@ class _SkeletonBoxState extends State<SkeletonBox>
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final base = scheme.surfaceContainerHighest;
-    final highlight = scheme.surfaceContainerLow;
+    final shine = scheme.surfaceContainerLowest;
 
     return AnimatedBuilder(
       animation: _controller,
       builder: (_, __) {
+        final slide = (_controller.value * 2.4) - 1.2;
         return Container(
           width: widget.width,
           height: widget.height,
           decoration: BoxDecoration(
-            color: Color.lerp(base, highlight, _controller.value),
             borderRadius: BorderRadius.circular(widget.borderRadius),
+            gradient: LinearGradient(
+              begin: Alignment(slide - 0.8, -0.2),
+              end: Alignment(slide + 0.8, 0.2),
+              colors: [
+                base,
+                shine,
+                base,
+              ],
+              stops: const [0.1, 0.5, 0.9],
+            ),
           ),
         );
       },

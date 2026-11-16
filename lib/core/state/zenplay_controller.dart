@@ -21,12 +21,15 @@ class ZenPlayController extends ChangeNotifier {
   ThemeMode _themeMode = ThemeMode.system;
   int _navIndex = 0;
   String _selectedCategory = 'All';
+  int _feedPage = 0;
 
   bool _isAppInitializing = false;
   List<VideoItem> _feedVideos = [];
   List<VideoItem> _searchResults = [];
+  List<String> _searchSuggestions = [];
   bool _hasActiveSearch = false;
   bool _isLoadingFeed = false;
+  bool _isLoadingMoreFeed = false;
   bool _isLoadingSearch = false;
   bool _isLoadingWatchDetails = false;
 
@@ -42,12 +45,18 @@ class ZenPlayController extends ChangeNotifier {
   bool _deArrowEnabled = true;
   bool _returnDislikeEnabled = true;
   bool _backgroundPlayEnabled = true;
+  bool _autoPlayEnabled = true;
   bool _hideShortsEnabled = true;
 
-  final Set<String> _watchLaterIds = {};
   final Set<String> _likedVideoIds = {};
-  final Map<String, String> _downloadedQualities = {'vid_zen_lofi': 'Audio only'};
-  final List<String> _watchHistoryIds = ['vid_sintel', 'vid_zen_lofi'];
+  final Set<String> _dislikedVideoIds = {};
+  final Map<String, String> _downloadedQualities = {};
+  final List<String> _watchHistoryIds = [];
+  final Map<String, Set<String>> _savedFolders = {
+    'Watch Later': {},
+    'Music': {},
+    'Tech': {},
+  };
   final List<String> _recentSearches = ['Latest songs', 'Flutter Material 3', 'Lofi focus'];
 
   ThemeMode get themeMode => _themeMode;
@@ -55,6 +64,7 @@ class ZenPlayController extends ChangeNotifier {
   String get selectedCategory => _selectedCategory;
   bool get isAppInitializing => _isAppInitializing;
   bool get isLoadingFeed => _isLoadingFeed;
+  bool get isLoadingMoreFeed => _isLoadingMoreFeed;
   bool get isLoadingSearch => _isLoadingSearch;
   bool get isLoadingWatchDetails => _isLoadingWatchDetails;
   VideoItem? get activeVideo => _activeVideo;
@@ -69,9 +79,12 @@ class ZenPlayController extends ChangeNotifier {
   bool get deArrowEnabled => _deArrowEnabled;
   bool get returnDislikeEnabled => _returnDislikeEnabled;
   bool get backgroundPlayEnabled => _backgroundPlayEnabled;
+  bool get autoPlayEnabled => _autoPlayEnabled;
   bool get hideShortsEnabled => _hideShortsEnabled;
 
   List<String> get recentSearches => List.unmodifiable(_recentSearches);
+  List<String> get searchSuggestions => List.unmodifiable(_searchSuggestions);
+  bool get hasActiveSearch => _hasActiveSearch;
 
   List<VideoItem> get feedVideos {
     if (!enableRemoteFetch && _selectedCategory != 'All') {
@@ -128,8 +141,23 @@ class ZenPlayController extends ChangeNotifier {
     }).toList();
   }
 
-  bool isSaved(String videoId) => _watchLaterIds.contains(videoId);
+  List<String> get folderNames => List.unmodifiable(_savedFolders.keys);
+
+  List<VideoItem> videosInFolder(String folder) {
+    final ids = _savedFolders[folder] ?? const <String>{};
+    final map = {for (final v in _allKnownVideos) v.id: v};
+    return ids.map((id) => map[id]).whereType<VideoItem>().toList();
+  }
+
+  int countInFolder(String folder) => _savedFolders[folder]?.length ?? 0;
+
+  bool isSavedInFolder(String folder, String videoId) =>
+      _savedFolders[folder]?.contains(videoId) ?? false;
+
+  bool isSaved(String videoId) =>
+      _savedFolders.values.any((ids) => ids.contains(videoId));
   bool isLiked(String videoId) => _likedVideoIds.contains(videoId);
+  bool isDisliked(String videoId) => _dislikedVideoIds.contains(videoId);
   bool isDownloaded(String videoId) => _downloadedQualities.containsKey(videoId);
   String? downloadedQualityFor(String videoId) => _downloadedQualities[videoId];
 
@@ -150,10 +178,11 @@ class ZenPlayController extends ChangeNotifier {
   Future<void> loadFeed({String? category}) async {
     final target = category ?? _selectedCategory;
     if (!enableRemoteFetch) return;
+    _feedPage = 0;
     _isLoadingFeed = true;
     notifyListeners();
     try {
-      final remote = await _youtube.fetchFeed(target);
+      final remote = await _youtube.fetchFeed(target, page: 0);
       if (remote.isNotEmpty) {
         _feedVideos = remote;
       } else if (_feedVideos.isEmpty) {
@@ -165,6 +194,25 @@ class ZenPlayController extends ChangeNotifier {
       }
     } finally {
       _isLoadingFeed = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> loadMoreFeed() async {
+    if (!enableRemoteFetch || _isLoadingFeed || _isLoadingMoreFeed) return;
+    _isLoadingMoreFeed = true;
+    notifyListeners();
+    try {
+      _feedPage += 1;
+      final more = await _youtube.fetchFeed(_selectedCategory, page: _feedPage);
+      final existingIds = _feedVideos.map((v) => v.id).toSet();
+      final unique = more.where((v) => !existingIds.contains(v.id)).toList();
+      if (unique.isNotEmpty) {
+        _feedVideos = [..._feedVideos, ...unique];
+      }
+    } catch (_) {
+    } finally {
+      _isLoadingMoreFeed = false;
       notifyListeners();
     }
   }
@@ -182,11 +230,26 @@ class ZenPlayController extends ChangeNotifier {
     return _allKnownVideos.where((v) => v.channel.id == channelId).toList();
   }
 
+  Future<void> updateSearchSuggestions(String query) async {
+    _hasActiveSearch = false;
+    final cleaned = query.trim();
+    if (cleaned.isEmpty) {
+      _searchSuggestions = [];
+      notifyListeners();
+      return;
+    }
+    if (!enableRemoteFetch) return;
+    final suggestions = await _youtube.fetchSearchSuggestions(cleaned);
+    _searchSuggestions = suggestions;
+    notifyListeners();
+  }
+
   Future<void> performSearch(String query) async {
     final cleaned = query.trim();
     if (cleaned.isEmpty) {
       _hasActiveSearch = false;
       _searchResults = [];
+      _searchSuggestions = [];
       notifyListeners();
       return;
     }
@@ -244,10 +307,16 @@ class ZenPlayController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final details = await _youtube.resolvePlaybackDetails(video.id);
+      final details = await _youtube.resolvePlaybackDetails(
+        video.id,
+        channelId: video.channel.id,
+      );
       if (_activeVideo?.id != video.id) return;
       _activeSponsorSegments = details.sponsorSegments;
       _activeVideo = video.copyWith(
+        channel: details.subscriberCount != null
+            ? video.channel.copyWith(subscriberCount: details.subscriberCount)
+            : null,
         description: details.description ?? video.description,
         likesCount: details.likesCount ?? video.likesCount,
         dislikesCount: details.dislikesCount ?? video.dislikesCount,
@@ -264,6 +333,11 @@ class ZenPlayController extends ChangeNotifier {
 
   void clearHistory() {
     _watchHistoryIds.clear();
+    notifyListeners();
+  }
+
+  void clearSearchHistory() {
+    _recentSearches.clear();
     notifyListeners();
   }
 
@@ -325,13 +399,25 @@ class ZenPlayController extends ChangeNotifier {
     notifyListeners();
   }
 
-  void toggleWatchLater(String videoId) {
-    if (_watchLaterIds.contains(videoId)) {
-      _watchLaterIds.remove(videoId);
+  void createFolder(String name) {
+    final cleaned = name.trim();
+    if (cleaned.isEmpty || _savedFolders.containsKey(cleaned)) return;
+    _savedFolders[cleaned] = {};
+    notifyListeners();
+  }
+
+  void toggleVideoInFolder(String folder, String videoId) {
+    final set = _savedFolders.putIfAbsent(folder, () => {});
+    if (set.contains(videoId)) {
+      set.remove(videoId);
     } else {
-      _watchLaterIds.add(videoId);
+      set.add(videoId);
     }
     notifyListeners();
+  }
+
+  void toggleWatchLater(String videoId) {
+    toggleVideoInFolder('Watch Later', videoId);
   }
 
   void toggleLike(String videoId) {
@@ -339,6 +425,17 @@ class ZenPlayController extends ChangeNotifier {
       _likedVideoIds.remove(videoId);
     } else {
       _likedVideoIds.add(videoId);
+      _dislikedVideoIds.remove(videoId);
+    }
+    notifyListeners();
+  }
+
+  void toggleDislike(String videoId) {
+    if (_dislikedVideoIds.contains(videoId)) {
+      _dislikedVideoIds.remove(videoId);
+    } else {
+      _dislikedVideoIds.add(videoId);
+      _likedVideoIds.remove(videoId);
     }
     notifyListeners();
   }
@@ -390,6 +487,11 @@ class ZenPlayController extends ChangeNotifier {
 
   void setBackgroundPlay(bool value) {
     _backgroundPlayEnabled = value;
+    notifyListeners();
+  }
+
+  void setAutoPlay(bool value) {
+    _autoPlayEnabled = value;
     notifyListeners();
   }
 

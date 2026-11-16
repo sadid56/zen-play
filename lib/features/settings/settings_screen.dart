@@ -54,16 +54,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ],
               if (_matches('Background playback', 'Keep audio playing when minimized') ||
-                  _matches('Hide Shorts', 'Keep feeds focused on full videos')) ...[
-                const _SectionLabel('Playback & Feed'),
+                  _matches('Default resolution', '1080p 720p 480p') ||
+                  _matches('Default playback speed', '0.75x 1.0x 1.5x 2.0x') ||
+                  _matches('Auto-play next video', 'Play up next automatically')) ...[
+                const _SectionLabel('Playback'),
                 if (_matches('Background playback', 'Keep audio playing when minimized'))
                   SwitchListTile(
                     secondary: const Icon(Icons.headphones_outlined),
                     title: const Text('Background playback'),
-                    subtitle: const Text('Keep audio playing when minimized'),
+                    subtitle: const Text('Keep audio playing when minimized or screen off'),
                     value: c.backgroundPlayEnabled,
                     onChanged: c.setBackgroundPlay,
                   ),
+                if (_matches('Auto-play next video', 'Play up next automatically'))
+                  SwitchListTile(
+                    secondary: const Icon(Icons.skip_next_outlined),
+                    title: const Text('Auto-play next video'),
+                    subtitle: const Text('Automatically queue next video'),
+                    value: c.autoPlayEnabled,
+                    onChanged: c.setAutoPlay,
+                  ),
+                if (_matches('Default resolution', '1080p 720p 480p'))
+                  ListTile(
+                    leading: const Icon(Icons.high_quality_outlined),
+                    title: const Text('Default resolution'),
+                    subtitle: Text(c.selectedQuality),
+                    onTap: () => _pickQuality(context, c),
+                  ),
+                if (_matches('Default playback speed', '0.75x 1.0x 1.5x 2.0x'))
+                  ListTile(
+                    leading: const Icon(Icons.speed_outlined),
+                    title: const Text('Default playback speed'),
+                    subtitle: Text('${c.playbackSpeed}x'),
+                    onTap: () => _pickSpeed(context, c),
+                  ),
+              ],
+              if (_matches('Hide Shorts', 'Keep feeds focused on full videos') ||
+                  _matches('Clear watch history', 'Remove recent 10 watched videos') ||
+                  _matches('Clear search history', 'Remove saved search queries')) ...[
+                const _SectionLabel('Feed & Privacy'),
                 if (_matches('Hide Shorts', 'Keep feeds focused on full videos'))
                   SwitchListTile(
                     secondary: const Icon(Icons.visibility_off_outlined),
@@ -71,6 +100,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     subtitle: const Text('Keep feeds focused on full videos'),
                     value: c.hideShortsEnabled,
                     onChanged: c.setHideShorts,
+                  ),
+                if (_matches('Clear watch history', 'Remove recent 10 watched videos'))
+                  ListTile(
+                    leading: const Icon(Icons.history_outlined),
+                    title: const Text('Clear watch history'),
+                    subtitle: const Text('Remove recent 10 watched videos'),
+                    onTap: () {
+                      c.clearHistory();
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Watch history cleared')),
+                      );
+                    },
+                  ),
+                if (_matches('Clear search history', 'Remove saved search queries'))
+                  ListTile(
+                    leading: const Icon(Icons.search_off_outlined),
+                    title: const Text('Clear search history'),
+                    subtitle: const Text('Remove recent search suggestions'),
+                    onTap: () {
+                      c.clearSearchHistory();
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Search history cleared')),
+                      );
+                    },
                   ),
               ],
               if (_matches('SponsorBlock', 'Skip sponsor segments') ||
@@ -141,6 +194,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 trailing: c.themeMode == mode ? const Icon(Icons.check_rounded) : null,
                 onTap: () {
                   c.setThemeMode(mode);
+                  Navigator.pop(context);
+                },
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _pickQuality(BuildContext context, ZenPlayController c) {
+    const qualities = ['2160p 4K', '1440p', '1080p', '720p', '480p', '360p'];
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (_) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            const ListTile(
+              title: Text('Default resolution', style: TextStyle(fontWeight: FontWeight.w700)),
+            ),
+            for (final q in qualities)
+              ListTile(
+                title: Text(q),
+                trailing: c.selectedQuality == q ? const Icon(Icons.check_rounded) : null,
+                onTap: () {
+                  c.setQuality(q);
+                  Navigator.pop(context);
+                },
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _pickSpeed(BuildContext context, ZenPlayController c) {
+    const speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (_) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            const ListTile(
+              title: Text('Default playback speed', style: TextStyle(fontWeight: FontWeight.w700)),
+            ),
+            for (final s in speeds)
+              ListTile(
+                title: Text('${s}x'),
+                trailing: c.playbackSpeed == s ? const Icon(Icons.check_rounded) : null,
+                onTap: () {
+                  c.setPlaybackSpeed(s);
                   Navigator.pop(context);
                 },
               ),

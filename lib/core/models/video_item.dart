@@ -96,6 +96,7 @@ class VideoItem {
   final List<CommentItem> comments;
 
   VideoItem copyWith({
+    ChannelInfo? channel,
     String? likesCount,
     String? dislikesCount,
     String? description,
@@ -106,7 +107,7 @@ class VideoItem {
     return VideoItem(
       id: id,
       title: title,
-      channel: channel,
+      channel: channel ?? this.channel,
       duration: duration,
       durationSeconds: durationSeconds,
       viewsText: viewsText,

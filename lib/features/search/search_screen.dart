@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:zenplay/core/models/channel_info.dart';
 import 'package:zenplay/core/models/video_item.dart';
@@ -24,14 +25,30 @@ class SearchScreen extends StatefulWidget {
 
 class _SearchScreenState extends State<SearchScreen> {
   final TextEditingController _textController = TextEditingController();
+  Timer? _debounce;
 
   @override
   void dispose() {
+    _debounce?.cancel();
     _textController.dispose();
     super.dispose();
   }
 
+  void _onQueryChanged(String value) {
+    setState(() {});
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 250), () {
+      widget.controller.updateSearchSuggestions(value);
+    });
+  }
+
   void _runSearch(String query) {
+    _debounce?.cancel();
+    _textController.text = query;
+    _textController.selection = TextSelection.fromPosition(
+      TextPosition(offset: query.length),
+    );
+    FocusScope.of(context).unfocus();
     widget.controller.performSearch(query);
     setState(() {});
   }
@@ -42,7 +59,9 @@ class _SearchScreenState extends State<SearchScreen> {
       listenable: widget.controller,
       builder: (context, _) {
         final query = _textController.text;
+        final suggestions = widget.controller.searchSuggestions;
         final results = widget.controller.searchVideos(query);
+        final showResults = widget.controller.hasActiveSearch;
 
         return Scaffold(
           appBar: AppBar(
@@ -52,7 +71,7 @@ class _SearchScreenState extends State<SearchScreen> {
               autofocus: true,
               textInputAction: TextInputAction.search,
               decoration: InputDecoration(
-                hintText: 'Search YouTube on ZenPlay...',
+                hintText: 'Search YouTube...',
                 border: InputBorder.none,
                 suffixIcon: query.isEmpty
                     ? null
@@ -65,7 +84,7 @@ class _SearchScreenState extends State<SearchScreen> {
                         },
                       ),
               ),
-              onChanged: (_) => setState(() {}),
+              onChanged: _onQueryChanged,
               onSubmitted: _runSearch,
             ),
           ),
@@ -86,40 +105,67 @@ class _SearchScreenState extends State<SearchScreen> {
                           ListTile(
                             leading: const Icon(Icons.history_rounded),
                             title: Text(item),
-                            onTap: () {
-                              _textController.text = item;
-                              _runSearch(item);
-                            },
+                            trailing: IconButton(
+                              icon: const Icon(Icons.north_west_rounded, size: 18),
+                              onPressed: () {
+                                _textController.text = item;
+                                _onQueryChanged(item);
+                              },
+                            ),
+                            onTap: () => _runSearch(item),
                           ),
                       ],
                     )
-                  : results.isEmpty
-                      ? const EmptyStateView(
-                          icon: Icons.search_off_rounded,
-                          title: 'No matching videos',
-                          subtitle: 'Try a different keyword or press Search.',
-                        )
-                      : ListView.builder(
+                  : !showResults
+                      ? ListView.builder(
                           padding: const EdgeInsets.symmetric(vertical: 8),
-                          itemCount: results.length,
+                          itemCount: suggestions.length,
                           itemBuilder: (_, index) {
-                            final video = results[index];
-                            return VideoCard(
-                              video: video,
-                              isSaved: widget.controller.isSaved(video.id),
-                              isDownloaded: widget.controller.isDownloaded(video.id),
-                              showDeArrowBadge: widget.controller.deArrowEnabled,
-                              showSponsorBlockBadge: widget.controller.sponsorBlockEnabled,
-                              onTap: () {
-                                widget.controller.addSearchQuery(query);
-                                widget.onOpenVideo(video);
-                              },
-                              onChannelTap: () => widget.onOpenChannel(video.channel),
-                              onSaveTap: () => widget.controller.toggleWatchLater(video.id),
-                              onDownloadTap: () => widget.controller.toggleDownload(video.id),
+                            final item = suggestions[index];
+                            return ListTile(
+                              leading: const Icon(Icons.search_rounded),
+                              title: Text(item),
+                              trailing: IconButton(
+                                icon: const Icon(Icons.north_west_rounded, size: 18),
+                                onPressed: () {
+                                  _textController.text = item;
+                                  _onQueryChanged(item);
+                                },
+                              ),
+                              onTap: () => _runSearch(item),
                             );
                           },
-                        ),
+                        )
+                      : results.isEmpty
+                          ? const EmptyStateView(
+                              icon: Icons.search_off_rounded,
+                              title: 'No matching videos',
+                              subtitle: 'Try a different keyword.',
+                            )
+                          : ListView.builder(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              itemCount: results.length,
+                              itemBuilder: (_, index) {
+                                final video = results[index];
+                                return VideoCard(
+                                  video: video,
+                                  isSaved: widget.controller.isSaved(video.id),
+                                  isDownloaded:
+                                      widget.controller.isDownloaded(video.id),
+                                  showDeArrowBadge:
+                                      widget.controller.deArrowEnabled,
+                                  showSponsorBlockBadge:
+                                      widget.controller.sponsorBlockEnabled,
+                                  onTap: () => widget.onOpenVideo(video),
+                                  onChannelTap: () =>
+                                      widget.onOpenChannel(video.channel),
+                                  onSaveTap: () =>
+                                      widget.controller.toggleWatchLater(video.id),
+                                  onDownloadTap: () =>
+                                      widget.controller.toggleDownload(video.id),
+                                );
+                              },
+                            ),
         );
       },
     );

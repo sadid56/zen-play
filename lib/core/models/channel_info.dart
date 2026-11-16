@@ -15,6 +15,17 @@ class ChannelInfo {
   final int avatarColorValue;
   final bool isVerified;
 
+  ChannelInfo copyWith({String? subscriberCount}) {
+    return ChannelInfo(
+      id: id,
+      name: name,
+      handle: handle,
+      subscriberCount: subscriberCount ?? this.subscriberCount,
+      avatarColorValue: avatarColorValue,
+      isVerified: isVerified,
+    );
+  }
+
   String get initials {
     final parts = name.trim().split(RegExp(r'\s+'));
     if (parts.isEmpty || parts.first.isEmpty) return 'Z';

@@ -3,7 +3,7 @@ import 'package:zenplay/core/state/zenplay_controller.dart';
 import 'package:zenplay/main.dart';
 
 void main() {
-  testWidgets('ZenPlay renders Home, History, and Downloads', (WidgetTester tester) async {
+  testWidgets('ZenPlay renders Home, History, Saved, and Downloads', (WidgetTester tester) async {
     final controller = ZenPlayController(enableRemoteFetch: false);
     addTearDown(controller.dispose);
 
@@ -12,11 +12,16 @@ void main() {
     expect(find.text('ZenPlay'), findsOneWidget);
     expect(find.text('Home'), findsOneWidget);
     expect(find.text('History'), findsOneWidget);
+    expect(find.text('Saved'), findsOneWidget);
     expect(find.text('Downloads'), findsOneWidget);
+
+    await tester.tap(find.text('Saved'));
+    await tester.pumpAndSettle();
+    expect(find.text('Saved Collections'), findsOneWidget);
+    expect(find.text('Watch Later'), findsOneWidget);
 
     await tester.tap(find.text('Downloads'));
     await tester.pumpAndSettle();
-
-    expect(find.textContaining('Deep Focus Ambient Session'), findsOneWidget);
+    expect(find.text('No offline videos'), findsOneWidget);
   });
 }

@@ -4,6 +4,7 @@ import 'package:zenplay/core/models/video_item.dart';
 class VideoRepository {
   static const List<String> categories = [
     'All',
+    'Live',
     'Tech',
     'Music',
     'Design',
