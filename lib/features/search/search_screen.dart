@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:zenplay/core/models/channel_info.dart';
 import 'package:zenplay/core/models/video_item.dart';
 import 'package:zenplay/core/state/zenplay_controller.dart';

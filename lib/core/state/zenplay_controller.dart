@@ -1,7 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:flutter/material.dart';
+import 'dart:math';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
@@ -40,7 +41,7 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
   int _navIndex = 0;
   String _selectedCategory = 'All';
   int _feedPage = 0;
-  int _refreshCycle = 0;
+  int _refreshCycle = Random().nextInt(1000);
 
   bool _isAppInitializing = false;
   bool _isOfflineMode = false;
@@ -72,6 +73,7 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
   final ValueNotifier<double> playbackProgressNotifier = ValueNotifier<double>(0.0);
   double _playbackSpeed = 1.0;
   String _selectedQuality = 'Auto';
+  String _effectiveQuality = 'Auto';
   bool _handledEndForCurrent = false;
 
   bool _sponsorBlockEnabled = true;
@@ -116,6 +118,30 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
   double get playbackProgress => playbackProgressNotifier.value;
   double get playbackSpeed => _playbackSpeed;
   String get selectedQuality => _selectedQuality;
+  String get effectiveQuality => _effectiveQuality;
+
+  String get activeQualityLabel {
+    if (_effectiveQuality == 'Audio only') return 'Audio only';
+    final size = _videoController?.value.size;
+    final realHeight = (size != null && size.height > 0) ? size.height.round() : 0;
+    final realLabel = _labelForHeight(realHeight);
+    if (realLabel != null) {
+      return _effectiveQuality == 'Auto' ? 'Auto ($realLabel)' : realLabel;
+    }
+    return _effectiveQuality;
+  }
+
+  static String? _labelForHeight(int height) {
+    if (height <= 0) return null;
+    if (height >= 2100) return '2160p';
+    if (height >= 1400) return '1440p';
+    if (height >= 1050) return '1080p';
+    if (height >= 700) return '720p';
+    if (height >= 460) return '480p';
+    if (height >= 340) return '360p';
+    if (height >= 220) return '240p';
+    return '144p';
+  }
 
   bool get sponsorBlockEnabled => _sponsorBlockEnabled;
   bool get deArrowEnabled => _deArrowEnabled;
@@ -582,7 +608,7 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
       _isLoadingFeed = false;
       notifyListeners();
       if (_feedVideos.isNotEmpty) {
-        prefetchVideos(_feedVideos.take(2).map((v) => v.id), maxCount: 2);
+        prefetchVideos(_feedVideos.take(4).map((v) => v.id), maxCount: 4);
       }
     }
   }
@@ -593,8 +619,21 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
   ) async {
     if (category == 'All' && _interestQueries.isNotEmpty) {
       final query = _interestQueries[page % _interestQueries.length];
-      final results = await _repository.searchVideos(query, category: 'All');
-      if (results.isNotEmpty) return results;
+      final results = await Future.wait([
+        _repository.fetchFeed(category, page: page),
+        _repository.searchVideos(query, category: 'All'),
+      ]);
+      final seen = <String>{};
+      final merged = <VideoItem>[];
+      for (final list in results) {
+        for (final v in list) {
+          if (seen.add(v.id)) merged.add(v);
+        }
+      }
+      if (merged.isNotEmpty) {
+        merged.shuffle();
+        return merged;
+      }
     }
     return _repository.fetchFeed(category, page: page);
   }
@@ -723,7 +762,7 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
       _isLoadingSearch = false;
       notifyListeners();
       if (_searchResults.isNotEmpty) {
-        prefetchVideos(_searchResults.take(2).map((v) => v.id), maxCount: 2);
+        prefetchVideos(_searchResults.take(4).map((v) => v.id), maxCount: 4);
       }
     }
   }
@@ -884,7 +923,9 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
       _availableQualities = streams.qualities;
       _qualityStreams = streams.qualityStreams;
 
-      final chosenTrack = _qualityStreams[_selectedQuality] ??
+      final hasRequested = _qualityStreams.containsKey(_selectedQuality);
+      _effectiveQuality = hasRequested ? _selectedQuality : 'Auto';
+      final chosenTrack = _qualityStreams[_effectiveQuality] ??
           _qualityStreams['Auto'] ??
           (streams.defaultUrl != null
               ? StreamTrackOption(videoUrl: streams.defaultUrl!)
@@ -1258,6 +1299,7 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> setQuality(String quality) async {
     _selectedQuality = quality;
+    _effectiveQuality = quality;
     _savePersistedState();
     final track = _qualityStreams[quality];
     if (track != null && track.videoUrl.isNotEmpty && _activeVideo != null) {

@@ -125,13 +125,20 @@ class YoutubeService {
 
   static const Map<String, List<String>> _categoryQueries = {
     'All': [
-      'latest music songs and tech videos',
+      'trending videos today',
       'popular science documentary 4k',
-      'trending live acoustic session',
+      'new music releases official video',
       'creative filmmaking breakdown',
-      'new indie music releases',
+      'street food around the world 4k',
+      'space astronomy discovery documentary',
       'world travel 4k hdr film',
+      'sports highlights today',
       'modern architecture tour',
+      'coding software engineering deep dive',
+      'stand up comedy best clips',
+      'wildlife nature 4k uhd',
+      'indie acoustic live session',
+      'history mystery explained documentary',
     ],
     'Live': [
       'live stream',
@@ -842,24 +849,40 @@ class YoutubeService {
           ? manifest.audioOnly.withHighestBitrate().url.toString()
           : null;
 
-      for (final s in manifest.muxed.sortByVideoQuality().reversed) {
-        final label = s.qualityLabel;
-        if (!qualityStreams.containsKey(label)) {
-          qualityStreams[label] = StreamTrackOption(videoUrl: s.url.toString());
-          heightByLabel[label] = s.videoResolution.height;
-        }
-      }
+      final muxedSorted = manifest.muxed.toList()
+        ..sort((a, b) {
+          final hCmp = b.videoResolution.height.compareTo(a.videoResolution.height);
+          if (hCmp != 0) return hCmp;
+          return b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond);
+        });
+
+      final videoOnlySorted = manifest.videoOnly.toList()
+        ..sort((a, b) {
+          final hCmp = b.videoResolution.height.compareTo(a.videoResolution.height);
+          if (hCmp != 0) return hCmp;
+          return b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond);
+        });
 
       if (bestAudioUrl != null) {
-        for (final s in manifest.videoOnly.sortByVideoQuality().reversed) {
-          final label = s.qualityLabel;
+        for (final s in videoOnlySorted) {
+          final h = s.videoResolution.height;
+          final label = h > 0 ? '${h}p' : s.qualityLabel;
           if (!qualityStreams.containsKey(label)) {
             qualityStreams[label] = StreamTrackOption(
               videoUrl: s.url.toString(),
               audioUrl: bestAudioUrl,
             );
-            heightByLabel[label] = s.videoResolution.height;
+            heightByLabel[label] = h;
           }
+        }
+      }
+
+      for (final s in muxedSorted) {
+        final h = s.videoResolution.height;
+        final label = h > 0 ? '${h}p' : s.qualityLabel;
+        if (!qualityStreams.containsKey(label)) {
+          qualityStreams[label] = StreamTrackOption(videoUrl: s.url.toString());
+          heightByLabel[label] = h;
         }
       }
 
@@ -879,33 +902,51 @@ class YoutubeService {
           final h = hls.videoResolution.height;
           if (h > 0) {
             final label = '${h}p';
-            qualityStreams[label] = StreamTrackOption(
-              videoUrl: hls.url.toString(),
-              isHls: true,
-            );
-            heightByLabel[label] = h;
+            if (!qualityStreams.containsKey(label)) {
+              qualityStreams[label] = StreamTrackOption(
+                videoUrl: hls.url.toString(),
+                isHls: true,
+              );
+              heightByLabel[label] = h;
+            }
           }
         }
         sortedLabels
           ..clear()
-          ..addAll(qualityStreams.keys)
+          ..addAll(qualityStreams.keys.where((k) => k != 'Audio only'))
           ..sort((a, b) =>
               (heightByLabel[b] ?? 0).compareTo(heightByLabel[a] ?? 0));
         if (bestAudioUrl != null) {
           qualityStreams['Audio only'] = StreamTrackOption(videoUrl: bestAudioUrl);
           sortedLabels.add('Audio only');
         }
-        final preferredHls = hlsVideos.where(
-          (h) => h.videoResolution.height <= 1080 && h.videoResolution.height > 0,
-        ).firstOrNull;
+        final hls720 = hlsVideos
+            .where(
+              (h) => h.videoResolution.height <= 720 && h.videoResolution.height > 0,
+            )
+            .toList()
+          ..sort((a, b) =>
+              b.videoResolution.height.compareTo(a.videoResolution.height));
+        final preferredHls = hls720.firstOrNull ??
+            hlsVideos
+                .where(
+                  (h) =>
+                      h.videoResolution.height <= 1080 &&
+                      h.videoResolution.height > 0,
+                )
+                .firstOrNull;
         defaultUrl = (preferredHls ?? manifest.hls.first).url.toString();
         qualityStreams['Auto'] = StreamTrackOption(
           videoUrl: defaultUrl,
           isHls: true,
         );
+      } else if (muxedSorted.isNotEmpty) {
+        final bestMuxed = muxedSorted.first;
+        defaultUrl = bestMuxed.url.toString();
+        qualityStreams['Auto'] = StreamTrackOption(videoUrl: defaultUrl);
       } else if (sortedLabels.isNotEmpty) {
         final preferred = sortedLabels.firstWhere(
-          (l) => (heightByLabel[l] ?? 0) <= 1080 && (heightByLabel[l] ?? 0) > 0,
+          (l) => (heightByLabel[l] ?? 0) <= 720 && (heightByLabel[l] ?? 0) > 0,
           orElse: () => sortedLabels.first,
         );
         final track = qualityStreams[preferred]!;
@@ -938,6 +979,145 @@ class YoutubeService {
         Map<String, StreamTrackOption> qualityStreams,
         List<String> qualities,
       })?> _fetchLiveHlsStream(String videoId) async {
+    try {
+      final resp = await _http
+          .post(
+            Uri.parse('https://www.youtube.com/youtubei/v1/player'),
+            headers: const {
+              'Content-Type': 'application/json',
+              'User-Agent':
+                  'com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)',
+            },
+            body: jsonEncode({
+              'context': {
+                'client': {
+                  'clientName': 'IOS',
+                  'clientVersion': '20.10.4',
+                  'deviceMake': 'Apple',
+                  'deviceModel': 'iPhone16,2',
+                  'osName': 'iPhone',
+                  'osVersion': '18.3.2.22D82',
+                  'hl': 'en',
+                  'gl': 'US',
+                },
+              },
+              'videoId': videoId,
+              'contentCheckOk': true,
+              'racyCheckOk': true,
+            }),
+          )
+          .timeout(const Duration(seconds: 6));
+
+      if (resp.statusCode == 200) {
+        final json = jsonDecode(resp.body);
+        if (json is Map<String, dynamic>) {
+          final sd = json['streamingData'];
+          if (sd is Map<String, dynamic>) {
+            final hlsUrl = sd['hlsManifestUrl'] as String?;
+            if (hlsUrl != null && hlsUrl.isNotEmpty) {
+              return (
+                defaultUrl: hlsUrl,
+                qualityStreams: {
+                  'Auto': StreamTrackOption(videoUrl: hlsUrl, isHls: true),
+                },
+                qualities: const ['Auto'],
+              );
+            }
+
+            final adaptive = (sd['adaptiveFormats'] as List? ?? const [])
+                .whereType<Map<String, dynamic>>()
+                .where((f) => (f['url'] as String?)?.isNotEmpty == true)
+                .toList();
+            final muxed = (sd['formats'] as List? ?? const [])
+                .whereType<Map<String, dynamic>>()
+                .where((f) => (f['url'] as String?)?.isNotEmpty == true)
+                .toList();
+
+            final audios = adaptive
+                .where((f) => ((f['mimeType'] as String?) ?? '').startsWith('audio/'))
+                .toList()
+              ..sort((a, b) {
+                final aMp4 = ((a['mimeType'] as String?) ?? '').contains('mp4') ? 1 : 0;
+                final bMp4 = ((b['mimeType'] as String?) ?? '').contains('mp4') ? 1 : 0;
+                if (bMp4 != aMp4) return bMp4.compareTo(aMp4);
+                return ((b['bitrate'] as num?) ?? 0)
+                    .compareTo((a['bitrate'] as num?) ?? 0);
+              });
+            final bestAudioUrl = audios.firstOrNull?['url'] as String?;
+
+            final videos = adaptive
+                .where((f) => ((f['mimeType'] as String?) ?? '').startsWith('video/'))
+                .toList()
+              ..sort((a, b) {
+                final hCmp = ((b['height'] as num?) ?? 0)
+                    .compareTo((a['height'] as num?) ?? 0);
+                if (hCmp != 0) return hCmp;
+                final aMp4 = ((a['mimeType'] as String?) ?? '').contains('mp4') ? 1 : 0;
+                final bMp4 = ((b['mimeType'] as String?) ?? '').contains('mp4') ? 1 : 0;
+                if (bMp4 != aMp4) return bMp4.compareTo(aMp4);
+                return ((b['bitrate'] as num?) ?? 0)
+                    .compareTo((a['bitrate'] as num?) ?? 0);
+              });
+
+            final qualityStreams = <String, StreamTrackOption>{};
+            final heightByLabel = <String, int>{};
+
+            if (bestAudioUrl != null) {
+              for (final v in videos) {
+                final h = (v['height'] as num?)?.toInt() ?? 0;
+                if (h <= 0) continue;
+                final label = '${h}p';
+                if (!qualityStreams.containsKey(label)) {
+                  qualityStreams[label] = StreamTrackOption(
+                    videoUrl: v['url'] as String,
+                    audioUrl: bestAudioUrl,
+                  );
+                  heightByLabel[label] = h;
+                }
+              }
+            }
+
+            for (final m in muxed) {
+              final h = (m['height'] as num?)?.toInt() ?? 0;
+              if (h <= 0) continue;
+              final label = '${h}p';
+              if (!qualityStreams.containsKey(label)) {
+                qualityStreams[label] = StreamTrackOption(
+                  videoUrl: m['url'] as String,
+                );
+                heightByLabel[label] = h;
+              }
+            }
+
+            final sortedLabels = qualityStreams.keys.toList()
+              ..sort((a, b) =>
+                  (heightByLabel[b] ?? 0).compareTo(heightByLabel[a] ?? 0));
+            if (bestAudioUrl != null) {
+              qualityStreams['Audio only'] =
+                  StreamTrackOption(videoUrl: bestAudioUrl);
+              sortedLabels.add('Audio only');
+            }
+
+            if (sortedLabels.isNotEmpty) {
+              final preferred = sortedLabels.firstWhere(
+                (l) =>
+                    (heightByLabel[l] ?? 0) <= 720 &&
+                    (heightByLabel[l] ?? 0) > 0,
+                orElse: () => sortedLabels.first,
+              );
+              final track = qualityStreams[preferred]!;
+              qualityStreams['Auto'] = track;
+              return (
+                defaultUrl: track.videoUrl,
+                qualityStreams: qualityStreams,
+                qualities: ['Auto', ...sortedLabels],
+              );
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
     try {
       final hlsUrl = await _yt.videos.streamsClient
           .getHttpLiveStreamUrl(VideoId(videoId))
@@ -1176,30 +1356,8 @@ class YoutubeService {
     }
   }
 
-  Future<CommentsPage> _fetchComments(String videoId) async {
-    final innerPage = await _innerTubeCommentsFirstPage(videoId);
-    if (innerPage.comments.isNotEmpty) return innerPage;
-
-    try {
-      final video = await _yt.videos.get(videoId).timeout(const Duration(seconds: 6));
-      final commentsList =
-          await _yt.videos.comments.getComments(video).timeout(const Duration(seconds: 8));
-      if (commentsList != null && commentsList.isNotEmpty) {
-        final items = commentsList.take(20).map((c) {
-          return CommentItem(
-            id: '${c.author}_${c.publishedTime}',
-            author: c.author,
-            text: c.text,
-            publishedAgo: c.publishedTime,
-            likes: _formatCompactCount(c.likeCount) ?? '0',
-            replyCount: c.replyCount,
-          );
-        }).toList();
-        return CommentsPage(comments: items);
-      }
-    } catch (_) {}
-
-    return const CommentsPage();
+  Future<CommentsPage> _fetchComments(String videoId) {
+    return _innerTubeCommentsFirstPage(videoId);
   }
 
   Future<CommentsPage> _innerTubeCommentsFirstPage(String videoId) async {

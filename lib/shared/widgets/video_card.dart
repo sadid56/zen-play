@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:zenplay/core/models/video_item.dart';
 import 'package:zenplay/shared/widgets/channel_avatar.dart';
 

@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 import 'package:zenplay/core/models/channel_info.dart';
@@ -146,7 +146,7 @@ class _WatchScreenState extends State<WatchScreen> {
               ListTile(
                 leading: const Icon(Icons.high_quality_outlined),
                 title: const Text('Resolution'),
-                trailing: Text(widget.controller.selectedQuality),
+                trailing: Text(widget.controller.activeQualityLabel),
                 onTap: () {
                   Navigator.pop(context);
                   _showQualitySheet(context);
@@ -231,7 +231,7 @@ class _WatchScreenState extends State<WatchScreen> {
       context: context,
       title: 'Quality',
       options: widget.controller.availableQualities,
-      selected: widget.controller.selectedQuality,
+      selected: widget.controller.effectiveQuality,
       labelBuilder: (q) => q == 'Auto' ? 'Auto (recommended)' : q,
       onSelected: widget.controller.setQuality,
     );
