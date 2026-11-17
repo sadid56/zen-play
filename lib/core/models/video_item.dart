@@ -119,6 +119,7 @@ class VideoItem {
 
   VideoItem copyWith({
     ChannelInfo? channel,
+    String? viewsText,
     String? likesCount,
     String? dislikesCount,
     String? description,
@@ -133,7 +134,7 @@ class VideoItem {
       channel: channel ?? this.channel,
       duration: duration,
       durationSeconds: durationSeconds,
-      viewsText: viewsText,
+      viewsText: viewsText ?? this.viewsText,
       publishedAgo: publishedAgo,
       category: category,
       description: description ?? this.description,

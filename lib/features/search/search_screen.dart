@@ -13,11 +13,13 @@ class SearchScreen extends StatefulWidget {
     required this.controller,
     required this.onOpenVideo,
     required this.onOpenChannel,
+    this.embedded = false,
   });
 
   final ZenPlayController controller;
   final ValueChanged<VideoItem> onOpenVideo;
   final ValueChanged<ChannelInfo> onOpenChannel;
+  final bool embedded;
 
   @override
   State<SearchScreen> createState() => _SearchScreenState();
@@ -70,44 +72,42 @@ class _SearchScreenState extends State<SearchScreen> {
         final results = widget.controller.searchVideos(query);
         final showResults = widget.controller.hasActiveSearch;
 
-        return Scaffold(
-          appBar: AppBar(
-            titleSpacing: 0,
-            title: TextField(
-              controller: _textController,
-              autofocus: true,
-              textInputAction: TextInputAction.search,
-              decoration: InputDecoration(
-                hintText: 'Search YouTube...',
-                border: InputBorder.none,
-                suffixIcon: query.isEmpty
-                    ? null
-                    : IconButton(
-                        icon: const Icon(Icons.close),
-                        onPressed: () {
-                          _textController.clear();
-                          widget.controller.performSearch('');
-                          setState(() {});
-                        },
-                      ),
-              ),
-              onChanged: _onQueryChanged,
-              onSubmitted: _runSearch,
-            ),
+        final searchField = TextField(
+          controller: _textController,
+          autofocus: !widget.embedded,
+          textInputAction: TextInputAction.search,
+          decoration: InputDecoration(
+            hintText: 'Search YouTube...',
+            border: widget.embedded ? InputBorder.none : InputBorder.none,
+            prefixIcon: widget.embedded ? const Icon(Icons.search_rounded) : null,
+            suffixIcon: query.isEmpty
+                ? null
+                : IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () {
+                      _textController.clear();
+                      widget.controller.performSearch('');
+                      setState(() {});
+                    },
+                  ),
           ),
-          body: widget.controller.isLoadingSearch
-              ? const VideoFeedSkeleton()
-              : query.trim().isEmpty
-                  ? ListView(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-                          child: Text(
-                            'Recent searches',
-                            style: Theme.of(context).textTheme.labelLarge,
-                          ),
+          onChanged: _onQueryChanged,
+          onSubmitted: _runSearch,
+        );
+
+        final resultsBody = widget.controller.isLoadingSearch
+            ? const VideoFeedSkeleton()
+            : query.trim().isEmpty
+                ? ListView(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                        child: Text(
+                          'Recent searches',
+                          style: Theme.of(context).textTheme.labelLarge,
                         ),
+                      ),
                         for (final item in widget.controller.recentSearches)
                           ListTile(
                             leading: const Icon(Icons.history_rounded),
@@ -164,6 +164,8 @@ class _SearchScreenState extends State<SearchScreen> {
                                   showSponsorBlockBadge:
                                       widget.controller.sponsorBlockEnabled,
                                   onTap: () => widget.onOpenVideo(video),
+                                  onPrefetch: () =>
+                                      widget.controller.prefetchVideo(video.id),
                                   onChannelTap: () =>
                                       widget.onOpenChannel(video.channel),
                                   onSaveTap: () =>
@@ -172,7 +174,34 @@ class _SearchScreenState extends State<SearchScreen> {
                                       widget.controller.toggleDownload(video.id),
                                 );
                               },
-                            ),
+                            );
+
+        if (widget.embedded) {
+          final scheme = Theme.of(context).colorScheme;
+          return Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
+                child: Material(
+                  color: scheme.surfaceContainerHighest.withValues(alpha: 0.65),
+                  borderRadius: BorderRadius.circular(28),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    child: searchField,
+                  ),
+                ),
+              ),
+              Expanded(child: resultsBody),
+            ],
+          );
+        }
+
+        return Scaffold(
+          appBar: AppBar(
+            titleSpacing: 0,
+            title: searchField,
+          ),
+          body: resultsBody,
         );
       },
     );

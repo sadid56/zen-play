@@ -39,7 +39,11 @@ abstract interface class VideoDataRepository {
     String channelName,
   );
   Future<String?> fetchChannelSubscribers(String channelId);
-  Future<StreamResolutionResult> fetchStreamsFast(String videoId);
+  Future<StreamResolutionResult> fetchStreamsFast(
+    String videoId, {
+    bool isLiveHint = false,
+  });
+  Future<void> prefetchStreams(Iterable<String> videoIds, {int maxCount = 3});
   Future<PlaybackDetails> resolvePlaybackDetails(
     String videoId, {
     String? channelId,
@@ -92,8 +96,15 @@ class YoutubeDataRepository implements VideoDataRepository {
       _service.fetchChannelSubscribers(channelId);
 
   @override
-  Future<StreamResolutionResult> fetchStreamsFast(String videoId) =>
-      _service.fetchStreamsFast(videoId);
+  Future<StreamResolutionResult> fetchStreamsFast(
+    String videoId, {
+    bool isLiveHint = false,
+  }) =>
+      _service.fetchStreamsFast(videoId, isLiveHint: isLiveHint);
+
+  @override
+  Future<void> prefetchStreams(Iterable<String> videoIds, {int maxCount = 3}) =>
+      _service.prefetchStreams(videoIds, maxCount: maxCount);
 
   @override
   Future<PlaybackDetails> resolvePlaybackDetails(

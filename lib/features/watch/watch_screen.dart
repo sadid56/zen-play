@@ -1209,6 +1209,8 @@ class _WatchScreenState extends State<WatchScreen> {
                                 showSponsorBlockBadge:
                                     widget.controller.sponsorBlockEnabled,
                                 onTap: () => widget.controller.playVideo(next),
+                                onPrefetch: () =>
+                                    widget.controller.prefetchVideo(next.id),
                                 onChannelTap: () =>
                                     widget.onOpenChannel(next.channel),
                                 onSaveTap: () => showSaveToFolderSheet(

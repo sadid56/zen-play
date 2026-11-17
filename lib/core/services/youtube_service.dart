@@ -68,6 +68,7 @@ class PlaybackDetails {
     this.streamUrl,
     this.qualityStreams = const {},
     this.description,
+    this.viewsText,
     this.likesCount,
     this.dislikesCount,
     this.subscriberCount,
@@ -85,6 +86,7 @@ class PlaybackDetails {
   final String? streamUrl;
   final Map<String, StreamTrackOption> qualityStreams;
   final String? description;
+  final String? viewsText;
   final String? likesCount;
   final String? dislikesCount;
   final String? subscriberCount;
@@ -99,6 +101,14 @@ class PlaybackDetails {
   final List<LiveChatMessage> liveChatMessages;
 }
 
+class _CachedStreamEntry {
+  _CachedStreamEntry(this.result) : cachedAt = DateTime.now();
+  final StreamResolutionResult result;
+  final DateTime cachedAt;
+
+  bool get isExpired => DateTime.now().difference(cachedAt).inMinutes >= 25;
+}
+
 class YoutubeService {
   YoutubeService({
     this.endpoints = const ApiEndpoints(),
@@ -110,7 +120,8 @@ class YoutubeService {
   final ApiEndpoints endpoints;
   final YoutubeExplode _yt;
   final http.Client _http;
-  final Map<String, StreamResolutionResult> _streamCache = {};
+  final Map<String, _CachedStreamEntry> _streamCache = {};
+  final Map<String, Future<StreamResolutionResult>> _inFlightStreams = {};
 
   static const Map<String, List<String>> _categoryQueries = {
     'All': [
@@ -666,19 +677,67 @@ class YoutubeService {
     return searchVideos(channelId);
   }
 
-  Future<StreamResolutionResult> fetchStreamsFast(String videoId) async {
+  Future<StreamResolutionResult> fetchStreamsFast(
+    String videoId, {
+    bool isLiveHint = false,
+  }) {
     final cached = _streamCache[videoId];
-    if (cached != null && cached.defaultUrl != null) return cached;
-    final res = await _fetchAvailableStreams(videoId);
-    final result = StreamResolutionResult(
-      defaultUrl: res.defaultUrl,
-      qualityStreams: res.qualityStreams,
-      qualities: res.qualities,
-    );
-    if (result.defaultUrl != null) {
-      _streamCache[videoId] = result;
+    if (cached != null && !cached.isExpired && cached.result.defaultUrl != null) {
+      return Future.value(cached.result);
     }
-    return result;
+    if (cached != null && cached.isExpired) {
+      _streamCache.remove(videoId);
+    }
+
+    final existing = _inFlightStreams[videoId];
+    if (existing != null) return existing;
+
+    final future = _fetchAndCacheStreams(videoId, isLiveHint: isLiveHint);
+    _inFlightStreams[videoId] = future;
+    return future;
+  }
+
+  Future<StreamResolutionResult> _fetchAndCacheStreams(
+    String videoId, {
+    bool isLiveHint = false,
+  }) async {
+    try {
+      final res = await _fetchAvailableStreams(videoId, isLiveHint: isLiveHint);
+      final result = StreamResolutionResult(
+        defaultUrl: res.defaultUrl,
+        qualityStreams: res.qualityStreams,
+        qualities: res.qualities,
+      );
+      if (result.defaultUrl != null) {
+        if (_streamCache.length >= 30) {
+          _streamCache.remove(_streamCache.keys.first);
+        }
+        _streamCache[videoId] = _CachedStreamEntry(result);
+      }
+      return result;
+    } finally {
+      _inFlightStreams.remove(videoId);
+    }
+  }
+
+  Future<void> prefetchStreams(
+    Iterable<String> videoIds, {
+    int maxCount = 3,
+  }) async {
+    final targets = <String>[];
+    for (final id in videoIds) {
+      if (id.isEmpty) continue;
+      final cached = _streamCache[id];
+      if (cached != null && !cached.isExpired) continue;
+      if (_inFlightStreams.containsKey(id)) continue;
+      targets.add(id);
+      if (targets.length >= maxCount) break;
+    }
+    if (targets.isEmpty) return;
+
+    await Future.wait(
+      targets.map((id) => fetchStreamsFast(id).catchError((_) => const StreamResolutionResult())),
+    );
   }
 
   Future<PlaybackDetails> resolvePlaybackDetails(
@@ -699,6 +758,7 @@ class YoutubeService {
         _innerTubeLiveChat(videoId)
       else
         Future<List<LiveChatMessage>>.value(const []),
+      _fetchWatchOwnerInfo(videoId),
     ]);
 
     final meta = results[0] as ({String? description, String? likes, bool isLive, String? channelId})?;
@@ -707,12 +767,18 @@ class YoutubeService {
     final commentsPage = results[3] as CommentsPage;
     var subs = results[4] as String?;
     var liveChat = results[5] as List<LiveChatMessage>;
+    final watchOwner = results[6] as ({
+      String? subscribers,
+      String? avatarUrl,
+      String? totalComments,
+      String? viewCount,
+      List<VideoItem> relatedVideos,
+    })?;
 
+    subs = watchOwner?.subscribers ?? subs;
     if (subs == null && meta?.channelId != null) {
       subs = await fetchChannelSubscribers(meta!.channelId!);
     }
-    final watchOwner = await _fetchWatchOwnerInfo(videoId);
-    subs ??= watchOwner?.subscribers;
     final channelAvatarUrl = watchOwner?.avatarUrl;
     final isLive = meta?.isLive ?? isLiveHint;
     if (isLive && liveChat.isEmpty && !isLiveHint) {
@@ -721,6 +787,7 @@ class YoutubeService {
 
     return PlaybackDetails(
       description: meta?.description,
+      viewsText: watchOwner?.viewCount,
       likesCount: ryd?.likes ?? meta?.likes,
       dislikesCount: ryd?.dislikes,
       subscriberCount: subs,
@@ -740,7 +807,15 @@ class YoutubeService {
         String? defaultUrl,
         Map<String, StreamTrackOption> qualityStreams,
         List<String> qualities,
-      })> _fetchAvailableStreams(String videoId) async {
+      })> _fetchAvailableStreams(
+    String videoId, {
+    bool isLiveHint = false,
+  }) async {
+    if (isLiveHint) {
+      final liveResult = await _fetchLiveHlsStream(videoId);
+      if (liveResult != null) return liveResult;
+    }
+
     try {
       StreamManifest manifest;
       try {
@@ -838,17 +913,45 @@ class YoutubeService {
         qualityStreams['Auto'] = track;
       }
 
+      if (defaultUrl != null) {
+        return (
+          defaultUrl: defaultUrl,
+          qualityStreams: qualityStreams,
+          qualities: ['Auto', ...sortedLabels],
+        );
+      }
+    } catch (_) {}
+
+    final liveFallback = await _fetchLiveHlsStream(videoId);
+    if (liveFallback != null) return liveFallback;
+
+    return (
+      defaultUrl: null,
+      qualityStreams: const <String, StreamTrackOption>{},
+      qualities: const ['Auto'],
+    );
+  }
+
+  Future<
+      ({
+        String? defaultUrl,
+        Map<String, StreamTrackOption> qualityStreams,
+        List<String> qualities,
+      })?> _fetchLiveHlsStream(String videoId) async {
+    try {
+      final hlsUrl = await _yt.videos.streamsClient
+          .getHttpLiveStreamUrl(VideoId(videoId))
+          .timeout(const Duration(seconds: 6));
+      if (hlsUrl.isEmpty) return null;
       return (
-        defaultUrl: defaultUrl,
-        qualityStreams: qualityStreams,
-        qualities: ['Auto', ...sortedLabels],
-      );
-    } catch (_) {
-      return (
-        defaultUrl: null,
-        qualityStreams: const <String, StreamTrackOption>{},
+        defaultUrl: hlsUrl,
+        qualityStreams: {
+          'Auto': StreamTrackOption(videoUrl: hlsUrl, isHls: true),
+        },
         qualities: const ['Auto'],
       );
+    } catch (_) {
+      return null;
     }
   }
 
@@ -857,6 +960,7 @@ class YoutubeService {
         String? subscribers,
         String? avatarUrl,
         String? totalComments,
+        String? viewCount,
         List<VideoItem> relatedVideos,
       })?> _fetchWatchOwnerInfo(String videoId) async {
     try {
@@ -885,11 +989,40 @@ class YoutubeService {
         subscribers: _findSubscriberCount(json),
         avatarUrl: _findOwnerAvatarUrl(json),
         totalComments: _findTotalCommentsCount(json),
+        viewCount: _findPrimaryViewCount(json),
         relatedVideos: related,
       );
     } catch (_) {
       return null;
     }
+  }
+
+  String? _findPrimaryViewCount(dynamic node) {
+    if (node is Map<String, dynamic>) {
+      final primary = node['videoPrimaryInfoRenderer'];
+      if (primary is Map<String, dynamic>) {
+        final vc = primary['viewCount'];
+        if (vc is Map<String, dynamic>) {
+          final renderer = vc['videoViewCountRenderer'];
+          if (renderer is Map<String, dynamic>) {
+            final shortVc = _readSimpleText(renderer['shortViewCount']);
+            if (shortVc != null && shortVc.isNotEmpty) return shortVc;
+            final fullVc = _readSimpleText(renderer['viewCount']);
+            if (fullVc != null && fullVc.isNotEmpty) return fullVc;
+          }
+        }
+      }
+      for (final value in node.values) {
+        final found = _findPrimaryViewCount(value);
+        if (found != null) return found;
+      }
+    } else if (node is List) {
+      for (final item in node) {
+        final found = _findPrimaryViewCount(item);
+        if (found != null) return found;
+      }
+    }
+    return null;
   }
 
   void _collectCompactRenderers(dynamic node, List<VideoItem> out) {
@@ -968,9 +1101,10 @@ class YoutubeService {
         final text = _readSimpleText(owner['subscriberCountText']);
         if (text != null && text.isNotEmpty) return text;
       }
-      final subText = _readSimpleText(node['subscriberCountText']);
-      if (subText != null && subText.toLowerCase().contains('subscriber')) {
-        return subText;
+      final header = node['c4TabbedHeaderRenderer'];
+      if (header is Map<String, dynamic>) {
+        final text = _readSimpleText(header['subscriberCountText']);
+        if (text != null && text.isNotEmpty) return text;
       }
       for (final value in node.values) {
         final found = _findSubscriberCount(value);
@@ -1463,10 +1597,16 @@ class YoutubeService {
   static String? _formatCompactCount(int? count) {
     if (count == null) return null;
     if (count >= 1000000) {
-      return '${(count / 1000000).toStringAsFixed(1)}M';
+      final tenths = (count * 10) ~/ 1000000;
+      final whole = tenths ~/ 10;
+      final frac = tenths % 10;
+      return frac == 0 ? '${whole}M' : '$whole.${frac}M';
     }
     if (count >= 1000) {
-      return '${(count / 1000).toStringAsFixed(1)}K';
+      final tenths = (count * 10) ~/ 1000;
+      final whole = tenths ~/ 10;
+      final frac = tenths % 10;
+      return frac == 0 ? '${whole}K' : '$whole.${frac}K';
     }
     return '$count';
   }

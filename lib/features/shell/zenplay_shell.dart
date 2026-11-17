@@ -66,13 +66,16 @@ class _ZenPlayShellState extends State<ZenPlayShell> {
     );
   }
 
-  void _openSearch(BuildContext context) {
+  void _openDownloads(BuildContext context) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => SearchScreen(
-          controller: widget.controller,
-          onOpenVideo: (video) => _openWatch(context, video),
-          onOpenChannel: (channel) => _openChannel(context, channel),
+        builder: (_) => Scaffold(
+          appBar: AppBar(title: const Text('Downloads')),
+          body: DownloadsScreen(
+            controller: widget.controller,
+            onOpenVideo: (video) => _openWatch(context, video),
+            onOpenChannel: (channel) => _openChannel(context, channel),
+          ),
         ),
       ),
     );
@@ -118,9 +121,9 @@ class _ZenPlayShellState extends State<ZenPlayShell> {
                   ),
                   actions: [
                     IconButton(
-                      onPressed: () => _openSearch(context),
-                      icon: const Icon(Icons.search_rounded),
-                      tooltip: 'Search',
+                      onPressed: () => _openDownloads(context),
+                      icon: const Icon(Icons.download_for_offline_outlined),
+                      tooltip: 'Downloads',
                     ),
                     IconButton(
                       onPressed: () => _openSettings(context),
@@ -139,6 +142,13 @@ class _ZenPlayShellState extends State<ZenPlayShell> {
                       onOpenChannel: (channel) =>
                           _openChannel(context, channel),
                     ),
+                    SearchScreen(
+                      controller: widget.controller,
+                      embedded: true,
+                      onOpenVideo: (video) => _openWatch(context, video),
+                      onOpenChannel: (channel) =>
+                          _openChannel(context, channel),
+                    ),
                     HistoryScreen(
                       controller: widget.controller,
                       onOpenVideo: (video) => _openWatch(context, video),
@@ -146,12 +156,6 @@ class _ZenPlayShellState extends State<ZenPlayShell> {
                           _openChannel(context, channel),
                     ),
                     SavedScreen(
-                      controller: widget.controller,
-                      onOpenVideo: (video) => _openWatch(context, video),
-                      onOpenChannel: (channel) =>
-                          _openChannel(context, channel),
-                    ),
-                    DownloadsScreen(
                       controller: widget.controller,
                       onOpenVideo: (video) => _openWatch(context, video),
                       onOpenChannel: (channel) =>
@@ -185,6 +189,11 @@ class _ZenPlayShellState extends State<ZenPlayShell> {
                           label: 'Home',
                         ),
                         NavigationDestination(
+                          icon: Icon(Icons.search_outlined),
+                          selectedIcon: Icon(Icons.search_rounded),
+                          label: 'Search',
+                        ),
+                        NavigationDestination(
                           icon: Icon(Icons.history_outlined),
                           selectedIcon: Icon(Icons.history_rounded),
                           label: 'History',
@@ -193,11 +202,6 @@ class _ZenPlayShellState extends State<ZenPlayShell> {
                           icon: Icon(Icons.folder_outlined),
                           selectedIcon: Icon(Icons.folder_rounded),
                           label: 'Saved',
-                        ),
-                        NavigationDestination(
-                          icon: Icon(Icons.download_outlined),
-                          selectedIcon: Icon(Icons.download_rounded),
-                          label: 'Downloads',
                         ),
                       ],
                     ),

@@ -1,7 +1,9 @@
 package com.zenplay.app
 
+import android.Manifest
 import android.app.PictureInPictureParams
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Build
 import android.util.Rational
@@ -11,8 +13,11 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     private val channelName = "com.zenplay.app/pip"
+    private val mediaChannelName = "com.zenplay.app/media"
     private var pipEnabled = false
     private var channel: MethodChannel? = null
+    private var mediaChannel: MethodChannel? = null
+    private var askedNotificationPermission = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -30,6 +35,51 @@ class MainActivity : FlutterActivity() {
                     }
                     else -> result.notImplemented()
                 }
+            }
+        }
+
+        mediaChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, mediaChannelName).apply {
+            setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "updateMediaState" -> {
+                        requestNotificationPermissionIfNeeded()
+                        val intent = Intent(this@MainActivity, BackgroundAudioService::class.java).apply {
+                            putExtra(BackgroundAudioService.EXTRA_TITLE, call.argument<String>("title") ?: "ZenPlay")
+                            putExtra(BackgroundAudioService.EXTRA_ARTIST, call.argument<String>("artist") ?: "ZenPlay")
+                            putExtra(BackgroundAudioService.EXTRA_IS_PLAYING, call.argument<Boolean>("isPlaying") ?: false)
+                            putExtra(BackgroundAudioService.EXTRA_DURATION_MS, (call.argument<Number>("durationMs") ?: 0).toLong())
+                            putExtra(BackgroundAudioService.EXTRA_POSITION_MS, (call.argument<Number>("positionMs") ?: 0).toLong())
+                            putExtra(BackgroundAudioService.EXTRA_ARTWORK_URL, call.argument<String>("artworkUrl"))
+                        }
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            startForegroundService(intent)
+                        } else {
+                            startService(intent)
+                        }
+                        result.success(null)
+                    }
+                    "clearMediaState" -> {
+                        stopService(Intent(this@MainActivity, BackgroundAudioService::class.java))
+                        result.success(null)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+        }
+
+        BackgroundAudioService.onMediaAction = { action, arg ->
+            runOnUiThread {
+                mediaChannel?.invokeMethod(action, arg)
+            }
+        }
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (askedNotificationPermission) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                askedNotificationPermission = true
+                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1002)
             }
         }
     }

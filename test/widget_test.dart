@@ -11,16 +11,17 @@ void main() {
 
     expect(find.text('ZenPlay'), findsOneWidget);
     expect(find.text('Home'), findsOneWidget);
+    expect(find.text('Search'), findsOneWidget);
     expect(find.text('History'), findsOneWidget);
     expect(find.text('Saved'), findsOneWidget);
-    expect(find.text('Downloads'), findsOneWidget);
+    expect(find.byTooltip('Downloads'), findsOneWidget);
 
     await tester.tap(find.text('Saved'));
     await tester.pumpAndSettle();
     expect(find.text('Saved Collections'), findsOneWidget);
     expect(find.text('No saved folders yet'), findsOneWidget);
 
-    await tester.tap(find.text('Downloads'));
+    await tester.tap(find.byTooltip('Downloads'));
     await tester.pumpAndSettle();
     expect(find.text('No offline videos'), findsOneWidget);
   });

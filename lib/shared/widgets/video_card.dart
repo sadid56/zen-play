@@ -7,6 +7,7 @@ class VideoCard extends StatelessWidget {
     super.key,
     required this.video,
     required this.onTap,
+    this.onPrefetch,
     this.onChannelTap,
     this.onSaveTap,
     this.onDownloadTap,
@@ -19,6 +20,7 @@ class VideoCard extends StatelessWidget {
 
   final VideoItem video;
   final VoidCallback onTap;
+  final VoidCallback? onPrefetch;
   final VoidCallback? onChannelTap;
   final VoidCallback? onSaveTap;
   final VoidCallback? onDownloadTap;
@@ -38,6 +40,7 @@ class VideoCard extends StatelessWidget {
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: InkWell(
         onTap: onTap,
+        onTapDown: onPrefetch != null ? (_) => onPrefetch!() : null,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [

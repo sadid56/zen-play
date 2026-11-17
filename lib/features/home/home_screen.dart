@@ -64,15 +64,65 @@ class _HomeScreenState extends State<HomeScreen> {
               selected: widget.controller.selectedCategory,
               onSelected: widget.controller.setCategory,
             ),
+            if (widget.controller.isOfflineMode && videos.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 6),
+                child: Material(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(12),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.wifi_off_rounded,
+                          size: 18,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            widget.controller.downloadedVideos.isNotEmpty
+                                ? 'Offline mode • Showing downloaded videos'
+                                : 'Offline mode • Download videos to watch offline',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: () =>
+                              widget.controller.loadFeed(isRefresh: true),
+                          child: const Text('Retry'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
             Expanded(
               child: widget.controller.isLoadingFeed
                   ? const VideoFeedSkeleton()
                   : videos.isEmpty
-                      ? const EmptyStateView(
-                          icon: Icons.video_collection_outlined,
-                          title: 'No videos in this category',
-                          subtitle: 'Try selecting another topic above.',
-                        )
+                      ? widget.controller.isOfflineMode
+                          ? EmptyStateView(
+                              icon: Icons.cloud_off_rounded,
+                              title: 'You\'re offline',
+                              subtitle:
+                                  'No downloaded videos yet. Connect to the internet to browse and download videos.',
+                              action: FilledButton.icon(
+                                onPressed: () =>
+                                    widget.controller.loadFeed(isRefresh: true),
+                                icon: const Icon(Icons.refresh_rounded),
+                                label: const Text('Retry'),
+                              ),
+                            )
+                          : const EmptyStateView(
+                              icon: Icons.video_collection_outlined,
+                              title: 'No videos in this category',
+                              subtitle: 'Try selecting another topic above.',
+                            )
                       : RefreshIndicator(
                           onRefresh: () =>
                               widget.controller.loadFeed(isRefresh: true),
@@ -95,6 +145,8 @@ class _HomeScreenState extends State<HomeScreen> {
                                 showSponsorBlockBadge:
                                     widget.controller.sponsorBlockEnabled,
                                 onTap: () => widget.onOpenVideo(video),
+                                onPrefetch: () =>
+                                    widget.controller.prefetchVideo(video.id),
                                 onChannelTap: () =>
                                     widget.onOpenChannel(video.channel),
                                 onSaveTap: () => showSaveToFolderSheet(

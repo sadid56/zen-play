@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
 import 'package:zenplay/core/data/video_repository.dart';
@@ -14,6 +15,7 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
     this.enableRemoteFetch = true,
   }) : _repository = repository ?? YoutubeDataRepository() {
     WidgetsBinding.instance.addObserver(this);
+    _mediaChannel.setMethodCallHandler(_handleMediaCall);
     if (enableRemoteFetch) {
       _initializeApp();
       _backgroundRefreshTimer = Timer.periodic(
@@ -24,6 +26,8 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
       _feedVideos = List.of(VideoRepository.videos);
     }
   }
+
+  static const MethodChannel _mediaChannel = MethodChannel('com.zenplay.app/media');
 
   final VideoDataRepository _repository;
   final bool enableRemoteFetch;
@@ -39,6 +43,7 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
   int _refreshCycle = 0;
 
   bool _isAppInitializing = false;
+  bool _isOfflineMode = false;
   List<VideoItem> _feedVideos = [];
   List<VideoItem> _relatedVideos = [];
   List<VideoItem> _searchResults = [];
@@ -124,6 +129,7 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
   List<VideoItem> get playQueue => List.unmodifiable(_playQueue);
   List<String> get searchSuggestions => List.unmodifiable(_searchSuggestions);
   bool get hasActiveSearch => _hasActiveSearch;
+  bool get isOfflineMode => _isOfflineMode;
 
   List<VideoItem> get feedVideos {
     if (!enableRemoteFetch && _selectedCategory != 'All') {
@@ -169,11 +175,14 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
 
   List<VideoItem> upNextFor(VideoItem current) {
     final queued = _playQueue.where((v) => v.id != current.id).toList();
-    final related = _relatedVideos.isNotEmpty
-        ? _relatedVideos.where((v) => v.id != current.id).toList()
-        : (_feedVideos.isNotEmpty ? _feedVideos : _allKnownVideos)
-            .where((v) => v.id != current.id)
-            .toList();
+    final offlineFallback = downloadedVideos.where((v) => v.id != current.id).toList();
+    final related = (_isOfflineMode || (isDownloaded(current.id) && _relatedVideos.isEmpty))
+        ? offlineFallback
+        : (_relatedVideos.isNotEmpty
+            ? _relatedVideos.where((v) => v.id != current.id).toList()
+            : (_feedVideos.isNotEmpty ? _feedVideos : _allKnownVideos)
+                .where((v) => v.id != current.id)
+                .toList());
     if (queued.isEmpty) return related;
     final queuedIds = queued.map((v) => v.id).toSet();
     return [...queued, ...related.where((v) => !queuedIds.contains(v.id))];
@@ -183,7 +192,17 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
     final q = query.trim().toLowerCase();
     if (q.isEmpty) return const [];
     if (_hasActiveSearch) return _searchResults;
-    return _allKnownVideos.where((v) {
+    return _searchLocalVideos(query);
+  }
+
+  List<VideoItem> _searchLocalVideos(String query) {
+    final q = query.trim().toLowerCase();
+    if (q.isEmpty) return const [];
+    final pool = <VideoItem>[
+      ...downloadedVideos,
+      ..._allKnownVideos.where((v) => !isDownloaded(v.id)),
+    ];
+    return pool.where((v) {
       return v.title.toLowerCase().contains(q) ||
           v.channel.name.toLowerCase().contains(q) ||
           v.category.toLowerCase().contains(q);
@@ -218,10 +237,11 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
     try {
       await _loadPersistedState();
-      await loadFeed();
-      if (_feedVideos.isEmpty) {
-        _feedVideos = List.of(VideoRepository.videos);
+      if (downloadedVideos.isNotEmpty) {
+        _feedVideos = downloadedVideos;
+        notifyListeners();
       }
+      await loadFeed();
     } finally {
       _isAppInitializing = false;
       notifyListeners();
@@ -387,6 +407,87 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  void playPreviousVideo() {
+    final pos = _videoController?.value.position ?? Duration.zero;
+    if (pos.inSeconds > 3) {
+      seekTo(0.0);
+      return;
+    }
+    final current = _activeVideo;
+    if (current == null) return;
+    final allMap = {for (final v in _allKnownVideos) v.id: v};
+    final prevId = _watchHistoryIds.firstWhere(
+      (id) => id != current.id && allMap.containsKey(id),
+      orElse: () => '',
+    );
+    if (prevId.isNotEmpty) {
+      playVideo(allMap[prevId]!);
+    } else {
+      seekTo(0.0);
+    }
+  }
+
+  Future<dynamic> _handleMediaCall(MethodCall call) async {
+    switch (call.method) {
+      case 'play':
+        if (!_isPlaying) togglePlayPause();
+        break;
+      case 'pause':
+        if (_isPlaying) togglePlayPause();
+        break;
+      case 'next':
+        playNextVideo();
+        break;
+      case 'previous':
+        playPreviousVideo();
+        break;
+      case 'seekTo':
+        final ms = call.arguments;
+        if (ms is num) {
+          final target = Duration(milliseconds: ms.toInt());
+          final player = _videoController;
+          if (player != null && player.value.isInitialized) {
+            await Future.wait([
+              player.seekTo(target),
+              if (_audioController != null && _audioController!.value.isInitialized)
+                _audioController!.seekTo(target),
+            ]);
+            _syncMediaNotification();
+          }
+        }
+        break;
+    }
+  }
+
+  void _syncMediaNotification() {
+    final video = _activeVideo;
+    if (video == null || !_backgroundPlayEnabled || !enableRemoteFetch) return;
+    final player = _videoController;
+    final durationMs = (player != null && player.value.isInitialized)
+        ? player.value.duration.inMilliseconds
+        : video.durationSeconds * 1000;
+    final positionMs = (player != null && player.value.isInitialized)
+        ? player.value.position.inMilliseconds
+        : 0;
+    unawaited(
+      _mediaChannel.invokeMethod('updateMediaState', {
+        'title': video.title,
+        'artist': video.channel.name,
+        'isPlaying': _isPlaying,
+        'durationMs': durationMs,
+        'positionMs': positionMs,
+        'artworkUrl': video.thumbnailUrl,
+      }).catchError((_) {}),
+    );
+  }
+
+  void _clearMediaNotification() {
+    if (!enableRemoteFetch) return;
+    unawaited(
+      _mediaChannel.invokeMethod('clearMediaState').catchError((_) {}),
+    );
+  }
+
   String exportBackupJson() {
     final neededIds = <String>{
       for (final ids in _savedFolders.values) ...ids,
@@ -467,18 +568,22 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
     try {
       final remote = await _fetchPersonalizedOrCategory(target, _feedPage);
       if (remote.isNotEmpty) {
+        _isOfflineMode = false;
         final shuffled = List.of(remote)..shuffle();
         _feedVideos = shuffled;
-      } else if (_feedVideos.isEmpty) {
-        _feedVideos = List.of(VideoRepository.videos);
+      } else {
+        _isOfflineMode = true;
+        _feedVideos = downloadedVideos;
       }
     } catch (_) {
-      if (_feedVideos.isEmpty) {
-        _feedVideos = List.of(VideoRepository.videos);
-      }
+      _isOfflineMode = true;
+      _feedVideos = downloadedVideos;
     } finally {
       _isLoadingFeed = false;
       notifyListeners();
+      if (_feedVideos.isNotEmpty) {
+        prefetchVideos(_feedVideos.take(2).map((v) => v.id), maxCount: 2);
+      }
     }
   }
 
@@ -604,13 +709,35 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
     _isLoadingSearch = true;
     notifyListeners();
     try {
-      _searchResults = await _repository.searchVideos(cleaned);
+      final remote = await _repository.searchVideos(cleaned);
+      if (remote.isNotEmpty) {
+        _isOfflineMode = false;
+        _searchResults = remote;
+      } else {
+        _searchResults = _searchLocalVideos(cleaned);
+      }
     } catch (_) {
-      _searchResults = [];
+      _isOfflineMode = true;
+      _searchResults = _searchLocalVideos(cleaned);
     } finally {
       _isLoadingSearch = false;
       notifyListeners();
+      if (_searchResults.isNotEmpty) {
+        prefetchVideos(_searchResults.take(2).map((v) => v.id), maxCount: 2);
+      }
     }
+  }
+
+  void prefetchVideo(String videoId) {
+    if (!enableRemoteFetch || videoId.isEmpty) return;
+    if (_downloadedFilePaths.containsKey(videoId)) return;
+    unawaited(_repository.prefetchStreams([videoId], maxCount: 1));
+  }
+
+  void prefetchVideos(Iterable<String> videoIds, {int maxCount = 3}) {
+    if (!enableRemoteFetch) return;
+    final remoteIds = videoIds.where((id) => !_downloadedFilePaths.containsKey(id));
+    unawaited(_repository.prefetchStreams(remoteIds, maxCount: maxCount));
   }
 
   void setNavIndex(int index) {
@@ -677,7 +804,7 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
     if (localPath != null && File(localPath).existsSync()) {
       await _initVideoController(filePath: localPath);
     } else {
-      await _disposeVideoController();
+      unawaited(_disposeVideoController());
     }
 
     if (!enableRemoteFetch) {
@@ -689,6 +816,14 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
 
     final localPlaying = _videoController != null;
+
+    if (localPlaying && _isOfflineMode) {
+      _relatedVideos =
+          downloadedVideos.where((v) => v.id != video.id).toList();
+      _isLoadingWatchDetails = false;
+      notifyListeners();
+      return;
+    }
 
     // 1. Start stream resolution immediately without waiting for comments/metadata
     if (!localPlaying) {
@@ -703,6 +838,7 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
         isLiveHint: video.isLive,
       );
       if (_activeVideo?.id != video.id) return;
+      _isOfflineMode = false;
       _activeSponsorSegments = details.sponsorSegments;
       _commentsNextToken = details.commentsNextToken;
       _relatedVideos = details.relatedVideos;
@@ -720,6 +856,7 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
               )
             : null,
         description: details.description ?? video.description,
+        viewsText: details.viewsText ?? video.viewsText,
         likesCount: details.likesCount ?? video.likesCount,
         dislikesCount: details.dislikesCount ?? video.dislikesCount,
         totalCommentsCount: details.totalCommentsCount ?? video.totalCommentsCount,
@@ -731,12 +868,18 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
     } finally {
       _isLoadingWatchDetails = false;
       notifyListeners();
+      if (_relatedVideos.isNotEmpty) {
+        prefetchVideos(_relatedVideos.take(2).map((v) => v.id), maxCount: 2);
+      }
     }
   }
 
   Future<void> _startFastStreamPlayback(VideoItem video) async {
     try {
-      final streams = await _repository.fetchStreamsFast(video.id);
+      final streams = await _repository.fetchStreamsFast(
+        video.id,
+        isLiveHint: video.isLive,
+      );
       if (_activeVideo?.id != video.id) return;
       _availableQualities = streams.qualities;
       _qualityStreams = streams.qualityStreams;
@@ -939,28 +1082,28 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
         if (nextAudio != null) nextAudio.initialize(),
       ]).timeout(const Duration(seconds: 15));
       if (_videoController != nextVideo) return;
-      await nextVideo.setLooping(_isLooping);
-      await nextVideo.setPlaybackSpeed(_playbackSpeed);
-      await nextVideo.setVolume(
-        nextAudio != null ? 0.0 : (_isMuted ? 0.0 : _volume / 100.0),
-      );
-      if (nextAudio != null) {
-        await nextAudio.setLooping(_isLooping);
-        await nextAudio.setPlaybackSpeed(_playbackSpeed);
-        await nextAudio.setVolume(_isMuted ? 0.0 : _volume / 100.0);
-      }
-      if (startAt != null && startAt > Duration.zero) {
-        await Future.wait([
+      final targetVolume = _isMuted ? 0.0 : _volume / 100.0;
+      await Future.wait([
+        if (_isLooping) nextVideo.setLooping(true),
+        if (_playbackSpeed != 1.0) nextVideo.setPlaybackSpeed(_playbackSpeed),
+        nextVideo.setVolume(nextAudio != null ? 0.0 : targetVolume),
+        if (nextAudio != null) ...[
+          if (_isLooping) nextAudio.setLooping(true),
+          if (_playbackSpeed != 1.0) nextAudio.setPlaybackSpeed(_playbackSpeed),
+          nextAudio.setVolume(targetVolume),
+        ],
+        if (startAt != null && startAt > Duration.zero) ...[
           nextVideo.seekTo(startAt),
           if (nextAudio != null) nextAudio.seekTo(startAt),
-        ]);
-      }
+        ],
+      ]);
       if (_isPlaying) {
         await Future.wait([
           nextVideo.play(),
           if (nextAudio != null) nextAudio.play(),
         ]);
       }
+      _syncMediaNotification();
       notifyListeners();
     } catch (_) {
       if (allowFallback && _qualityStreams['360p'] != null) {
@@ -1021,6 +1164,7 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
       _videoController?.pause();
       _audioController?.pause();
     }
+    _syncMediaNotification();
     notifyListeners();
   }
 
@@ -1037,6 +1181,7 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
         if (_audioController != null && _audioController!.value.isInitialized)
           _audioController!.seekTo(target),
       ]);
+      _syncMediaNotification();
     }
   }
 
@@ -1100,6 +1245,7 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
     _isWatchExpanded = false;
     _activeSponsorSegments = const [];
     _isPlaying = false;
+    _clearMediaNotification();
     notifyListeners();
   }
 
@@ -1287,12 +1433,14 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
         _videoController!.value.isInitialized) {
       _videoController!.play();
       _audioController?.play();
+      _syncMediaNotification();
     }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _mediaChannel.setMethodCallHandler(null);
     _backgroundRefreshTimer?.cancel();
     _sleepTimer?.cancel();
     _disposeVideoController();
