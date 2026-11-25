@@ -9,6 +9,7 @@ import 'package:zenplay/features/home/home_screen.dart';
 import 'package:zenplay/features/saved/saved_screen.dart';
 import 'package:zenplay/features/search/search_screen.dart';
 import 'package:zenplay/features/settings/settings_screen.dart';
+import 'package:zenplay/features/tv/tv_screen.dart';
 import 'package:zenplay/features/watch/watch_screen.dart';
 import 'package:zenplay/shared/widgets/mini_player_bar.dart';
 import 'package:zenplay/shared/widgets/zenplay_logo.dart';
@@ -142,6 +143,9 @@ class _ZenPlayShellState extends State<ZenPlayShell> {
                       onOpenChannel: (channel) =>
                           _openChannel(context, channel),
                     ),
+                    TvScreen(
+                      controller: widget.controller,
+                    ),
                     SearchScreen(
                       controller: widget.controller,
                       embedded: true,
@@ -187,6 +191,11 @@ class _ZenPlayShellState extends State<ZenPlayShell> {
                           icon: Icon(Icons.home_outlined),
                           selectedIcon: Icon(Icons.home_rounded),
                           label: 'Home',
+                        ),
+                        NavigationDestination(
+                          icon: Icon(Icons.live_tv_outlined),
+                          selectedIcon: Icon(Icons.live_tv_rounded),
+                          label: 'TV',
                         ),
                         NavigationDestination(
                           icon: Icon(Icons.search_outlined),

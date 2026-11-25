@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:material_ui/material_ui.dart';
 import 'package:zenplay/core/models/channel_info.dart';
+import 'package:zenplay/core/models/tv_channel.dart';
 import 'package:zenplay/core/models/video_item.dart';
 import 'package:zenplay/core/state/zenplay_controller.dart';
 import 'package:zenplay/shared/widgets/empty_state_view.dart';
@@ -70,15 +71,22 @@ class _SearchScreenState extends State<SearchScreen> {
         final query = _textController.text;
         final suggestions = widget.controller.searchSuggestions;
         final results = widget.controller.searchVideos(query);
+        final tvMatches = widget.controller.searchTvChannels(query);
         final showResults = widget.controller.hasActiveSearch;
 
         final searchField = TextField(
           controller: _textController,
           autofocus: !widget.embedded,
+          textAlignVertical: TextAlignVertical.center,
           textInputAction: TextInputAction.search,
           decoration: InputDecoration(
-            hintText: 'Search YouTube...',
-            border: widget.embedded ? InputBorder.none : InputBorder.none,
+            hintText: 'Search YouTube & Live TV...',
+            isDense: true,
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: 12,
+            ),
+            border: InputBorder.none,
             prefixIcon: widget.embedded ? const Icon(Icons.search_rounded) : null,
             suffixIcon: query.isEmpty
                 ? null
@@ -126,9 +134,18 @@ class _SearchScreenState extends State<SearchScreen> {
                   : !showResults
                       ? ListView.builder(
                           padding: const EdgeInsets.symmetric(vertical: 8),
-                          itemCount: suggestions.length,
+                          itemCount:
+                              suggestions.length + (tvMatches.isNotEmpty ? 1 : 0),
                           itemBuilder: (_, index) {
-                            final item = suggestions[index];
+                            if (tvMatches.isNotEmpty && index == 0) {
+                              return _TvSearchSection(
+                                channels: tvMatches,
+                                onTapChannel: widget.controller.playTvChannel,
+                              );
+                            }
+                            final sIndex =
+                                tvMatches.isNotEmpty ? index - 1 : index;
+                            final item = suggestions[sIndex];
                             return ListTile(
                               leading: const Icon(Icons.search_rounded),
                               title: Text(item),
@@ -143,7 +160,7 @@ class _SearchScreenState extends State<SearchScreen> {
                             );
                           },
                         )
-                      : results.isEmpty
+                      : results.isEmpty && tvMatches.isEmpty
                           ? const EmptyStateView(
                               icon: Icons.search_off_rounded,
                               title: 'No matching videos',
@@ -151,9 +168,19 @@ class _SearchScreenState extends State<SearchScreen> {
                             )
                           : ListView.builder(
                               padding: const EdgeInsets.symmetric(vertical: 8),
-                              itemCount: results.length,
+                              itemCount:
+                                  results.length + (tvMatches.isNotEmpty ? 1 : 0),
                               itemBuilder: (_, index) {
-                                final video = results[index];
+                                if (tvMatches.isNotEmpty && index == 0) {
+                                  return _TvSearchSection(
+                                    channels: tvMatches,
+                                    onTapChannel:
+                                        widget.controller.playTvChannel,
+                                  );
+                                }
+                                final videoIndex =
+                                    tvMatches.isNotEmpty ? index - 1 : index;
+                                final video = results[videoIndex];
                                 return VideoCard(
                                   video: video,
                                   isSaved: widget.controller.isSaved(video.id),
@@ -204,6 +231,72 @@ class _SearchScreenState extends State<SearchScreen> {
           body: resultsBody,
         );
       },
+    );
+  }
+}
+
+class _TvSearchSection extends StatelessWidget {
+  const _TvSearchSection({
+    required this.channels,
+    required this.onTapChannel,
+  });
+
+  final List<TvChannel> channels;
+  final ValueChanged<TvChannel> onTapChannel;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+          child: Row(
+            children: [
+              Container(
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(
+                  color: Colors.red.shade600,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                'Live TV Channels',
+                style: theme.textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(
+          height: 60,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            itemCount: channels.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 10),
+            itemBuilder: (_, i) {
+              final ch = channels[i];
+              return ActionChip(
+                avatar: ch.logoUrl != null
+                    ? CircleAvatar(
+                        backgroundColor: scheme.surface,
+                        backgroundImage: NetworkImage(ch.logoUrl!),
+                      )
+                    : const Icon(Icons.live_tv_rounded, size: 16),
+                label: Text('${ch.name} • LIVE'),
+                onPressed: () => onTapChannel(ch),
+              );
+            },
+          ),
+        ),
+        const SizedBox(height: 8),
+      ],
     );
   }
 }

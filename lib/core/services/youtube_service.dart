@@ -830,16 +830,17 @@ class YoutubeService {
             .getManifest(
               videoId,
               ytClients: [
-                YoutubeApiClient.ios,
                 YoutubeApiClient.androidSdkless,
+                YoutubeApiClient.tv,
+                YoutubeApiClient.ios,
               ],
               requireWatchPage: false,
             )
-            .timeout(const Duration(seconds: 6));
+            .timeout(const Duration(seconds: 8));
       } catch (_) {
         manifest = await _yt.videos.streamsClient
             .getManifest(videoId, requireWatchPage: false)
-            .timeout(const Duration(seconds: 6));
+            .timeout(const Duration(seconds: 8));
       }
 
       final qualityStreams = <String, StreamTrackOption>{};
@@ -896,7 +897,15 @@ class YoutubeService {
       }
 
       String? defaultUrl;
-      if (manifest.hls.isNotEmpty) {
+      if (muxedSorted.isNotEmpty) {
+        // Prefer single-stream muxed MP4 for Auto (fast start, minimal buffering)
+        final muxed720 = muxedSorted
+            .where((m) => m.videoResolution.height <= 720)
+            .firstOrNull;
+        final bestMuxed = muxed720 ?? muxedSorted.first;
+        defaultUrl = bestMuxed.url.toString();
+        qualityStreams['Auto'] = StreamTrackOption(videoUrl: defaultUrl);
+      } else if (manifest.hls.isNotEmpty) {
         final hlsVideos = manifest.hls.whereType<VideoStreamInfo>().toList();
         for (final hls in hlsVideos) {
           final h = hls.videoResolution.height;
@@ -940,13 +949,9 @@ class YoutubeService {
           videoUrl: defaultUrl,
           isHls: true,
         );
-      } else if (muxedSorted.isNotEmpty) {
-        final bestMuxed = muxedSorted.first;
-        defaultUrl = bestMuxed.url.toString();
-        qualityStreams['Auto'] = StreamTrackOption(videoUrl: defaultUrl);
       } else if (sortedLabels.isNotEmpty) {
         final preferred = sortedLabels.firstWhere(
-          (l) => (heightByLabel[l] ?? 0) <= 720 && (heightByLabel[l] ?? 0) > 0,
+          (l) => (heightByLabel[l] ?? 0) <= 480 && (heightByLabel[l] ?? 0) > 0,
           orElse: () => sortedLabels.first,
         );
         final track = qualityStreams[preferred]!;

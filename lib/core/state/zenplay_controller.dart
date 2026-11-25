@@ -8,7 +8,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
 import 'package:zenplay/core/data/video_repository.dart';
 import 'package:zenplay/core/models/channel_info.dart';
+import 'package:zenplay/core/models/tv_channel.dart';
 import 'package:zenplay/core/models/video_item.dart';
+import 'package:zenplay/core/services/tv_service.dart';
 
 class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
   ZenPlayController({
@@ -31,6 +33,7 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
   static const MethodChannel _mediaChannel = MethodChannel('com.zenplay.app/media');
 
   final VideoDataRepository _repository;
+  final TvService _tvService = TvService();
   final bool enableRemoteFetch;
   Timer? _backgroundRefreshTimer;
   Timer? _sleepTimer;
@@ -56,6 +59,12 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
   bool _isLoadingWatchDetails = false;
   bool _isLoadingMoreComments = false;
   String? _commentsNextToken;
+
+  String _selectedTvCategory = 'All';
+  List<TvChannel> _tvChannels = [];
+  List<TvChannel> _tvSearchResults = [];
+  bool _isLoadingTv = false;
+  final Map<String, TvChannel> _tvChannelByVideoId = {};
 
   VideoItem? _activeVideo;
   bool _isWatchExpanded = false;
@@ -156,6 +165,9 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
   List<String> get searchSuggestions => List.unmodifiable(_searchSuggestions);
   bool get hasActiveSearch => _hasActiveSearch;
   bool get isOfflineMode => _isOfflineMode;
+  String get selectedTvCategory => _selectedTvCategory;
+  List<TvChannel> get tvChannels => List.unmodifiable(_tvChannels);
+  bool get isLoadingTv => _isLoadingTv;
 
   List<VideoItem> get feedVideos {
     if (!enableRemoteFetch && _selectedCategory != 'All') {
@@ -728,8 +740,15 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     if (!enableRemoteFetch) return;
+    unawaited(_searchTvInBackground(cleaned));
     final suggestions = await _repository.fetchSearchSuggestions(cleaned);
     _searchSuggestions = suggestions;
+    notifyListeners();
+  }
+
+  Future<void> _searchTvInBackground(String query) async {
+    final matches = await _tvService.searchChannels(query);
+    _tvSearchResults = matches;
     notifyListeners();
   }
 
@@ -748,7 +767,12 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
     _isLoadingSearch = true;
     notifyListeners();
     try {
-      final remote = await _repository.searchVideos(cleaned);
+      final results = await Future.wait([
+        _repository.searchVideos(cleaned),
+        _tvService.searchChannels(cleaned),
+      ]);
+      final remote = results[0] as List<VideoItem>;
+      _tvSearchResults = results[1] as List<TvChannel>;
       if (remote.isNotEmpty) {
         _isOfflineMode = false;
         _searchResults = remote;
@@ -866,6 +890,32 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
 
     // 1. Start stream resolution immediately without waiting for comments/metadata
     if (!localPlaying) {
+      final tvChannel = _tvChannelByVideoId[video.id];
+      if (tvChannel != null) {
+        _relatedVideos = _tvChannels
+            .where((c) => c.id != tvChannel.id)
+            .take(15)
+            .map(_toVideoItem)
+            .toList();
+        _isLoadingWatchDetails = false;
+        notifyListeners();
+        final resolvedUrl = await _tvService.resolveFastStreamUrl(tvChannel);
+        if (_activeVideo?.id != video.id) return;
+        if (resolvedUrl == null) {
+          _tvService.markChannelOffline(tvChannel.id);
+          _tvChannels =
+              _tvChannels.where((c) => c.id != tvChannel.id).toList();
+          _playbackError = 'Channel stream is currently offline. Try another channel.';
+          notifyListeners();
+          return;
+        }
+        await _initVideoController(
+          networkUrl: resolvedUrl,
+          isHls: tvChannel.isHls,
+          httpHeaders: tvChannel.httpHeaders,
+        );
+        return;
+      }
       unawaited(_startFastStreamPlayback(video));
     }
 
@@ -1085,6 +1135,7 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
     String? networkUrl,
     String? audioUrl,
     bool isHls = false,
+    Map<String, String> httpHeaders = const {},
     String? filePath,
     Duration? startAt,
     bool allowFallback = true,
@@ -1103,11 +1154,13 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
         : VideoPlayerController.networkUrl(
             Uri.parse(networkUrl!),
             formatHint: isHls ? VideoFormat.hls : null,
+            httpHeaders: httpHeaders,
             videoPlayerOptions: options,
           );
     final nextAudio = audioUrl != null
         ? VideoPlayerController.networkUrl(
             Uri.parse(audioUrl),
+            httpHeaders: httpHeaders,
             videoPlayerOptions: options,
           )
         : null;
@@ -1121,7 +1174,7 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
       await Future.wait([
         nextVideo.initialize(),
         if (nextAudio != null) nextAudio.initialize(),
-      ]).timeout(const Duration(seconds: 15));
+      ]).timeout(const Duration(seconds: 20));
       if (_videoController != nextVideo) return;
       final targetVolume = _isMuted ? 0.0 : _volume / 100.0;
       await Future.wait([
@@ -1147,12 +1200,24 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
       _syncMediaNotification();
       notifyListeners();
     } catch (_) {
+      if (allowFallback && isHls && networkUrl != null) {
+        await _initVideoController(
+          networkUrl: networkUrl,
+          audioUrl: audioUrl,
+          isHls: false,
+          httpHeaders: httpHeaders,
+          startAt: startAt,
+          allowFallback: false,
+        );
+        return;
+      }
       if (allowFallback && _qualityStreams['360p'] != null) {
         final fallback = _qualityStreams['360p']!;
         await _initVideoController(
           networkUrl: fallback.videoUrl,
           audioUrl: fallback.audioUrl,
           isHls: fallback.isHls,
+          httpHeaders: httpHeaders,
           startAt: startAt,
           allowFallback: false,
         );
@@ -1165,7 +1230,13 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
 
   void _onVideoTick() {
     final player = _videoController;
-    if (player == null || !player.value.isInitialized) return;
+    if (player == null) return;
+    if (player.value.hasError && _playbackError == null) {
+      _playbackError = 'Stream interrupted. Tap Retry or switch channel.';
+      notifyListeners();
+      return;
+    }
+    if (!player.value.isInitialized) return;
 
     final durationMs = player.value.duration.inMilliseconds;
     final posMs = player.value.position.inMilliseconds;
@@ -1479,6 +1550,96 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  List<TvChannel> searchTvChannels(String query) {
+    final q = query.trim().toLowerCase();
+    if (q.isEmpty) return const [];
+    final seen = <String>{};
+    final combined = <TvChannel>[];
+    for (final c in [..._tvSearchResults, ..._tvChannels]) {
+      if ((c.name.toLowerCase().contains(q) ||
+              c.category.toLowerCase().contains(q)) &&
+          seen.add(c.id)) {
+        combined.add(c);
+      }
+    }
+    return combined.take(15).toList();
+  }
+
+  Future<void> loadTvChannels({
+    String? category,
+    bool forceRefresh = false,
+  }) async {
+    final target = category ?? _selectedTvCategory;
+    if (category != null) {
+      _selectedTvCategory = category;
+    }
+    if (!enableRemoteFetch) {
+      notifyListeners();
+      return;
+    }
+    _isLoadingTv = true;
+    notifyListeners();
+    try {
+      final channels = await _tvService.fetchChannels(
+        target,
+        forceRefresh: forceRefresh,
+      );
+      _tvChannels = channels;
+    } catch (_) {
+      _tvChannels = [];
+    } finally {
+      _isLoadingTv = false;
+      notifyListeners();
+    }
+  }
+
+  void setTvCategory(String category) {
+    if (_selectedTvCategory == category && _tvChannels.isNotEmpty) return;
+    _selectedTvCategory = category;
+    notifyListeners();
+    loadTvChannels(category: category);
+  }
+
+  VideoItem _toVideoItem(TvChannel channel) {
+    final videoId = 'tv_${channel.id}';
+    _tvChannelByVideoId[videoId] = channel;
+    return VideoItem(
+      id: videoId,
+      title: channel.name,
+      channel: ChannelInfo(
+        id: videoId,
+        name: channel.name,
+        handle: '@${TvService.slugify(channel.name)}',
+        subscriberCount: 'Live TV',
+        avatarColorValue: 0xFF6750A4,
+        avatarUrl: channel.logoUrl,
+      ),
+      duration: 'LIVE',
+      durationSeconds: 0,
+      viewsText: 'Live TV',
+      publishedAgo: channel.category,
+      category: channel.category,
+      description: 'Live TV stream • ${channel.category}',
+      likesCount: 'Live',
+      dislikesCount: '',
+      accentColorValue: 0xFF6750A4,
+      thumbnailUrl: channel.logoUrl,
+      isLive: true,
+    );
+  }
+
+  Future<void> playTvChannel(TvChannel channel) async {
+    final video = _toVideoItem(channel);
+    final upNext = _tvChannels
+        .where((c) => c.id != channel.id)
+        .take(15)
+        .map(_toVideoItem)
+        .toList();
+    await playVideo(video);
+    _relatedVideos = upNext;
+    notifyListeners();
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
@@ -1487,6 +1648,7 @@ class ZenPlayController extends ChangeNotifier with WidgetsBindingObserver {
     _sleepTimer?.cancel();
     _disposeVideoController();
     playbackProgressNotifier.dispose();
+    _tvService.dispose();
     _repository.dispose();
     super.dispose();
   }

@@ -70,7 +70,13 @@ class _WatchScreenState extends State<WatchScreen> {
   }
 
   Future<dynamic> _handlePipCall(MethodCall call) async {
-    if (call.method == 'onPipChanged' && mounted) {
+    if (!mounted) return;
+    if (call.method == 'onPipClosed') {
+      setState(() => _isInPipMode = false);
+      widget.controller.closeMiniPlayer();
+      return;
+    }
+    if (call.method == 'onPipChanged') {
       final inPip = call.arguments == true;
       setState(() => _isInPipMode = inPip);
       if (inPip && widget.controller.isPlaying) {
@@ -858,6 +864,7 @@ class _WatchScreenState extends State<WatchScreen> {
         final upNext = widget.controller.upNextFor(video);
         final player = widget.controller.videoController;
         final hideBelowPlayer = _isInPipMode || _isFullscreen;
+        final isLiveTv = video.id.startsWith('tv_');
 
         return Scaffold(
           backgroundColor: hideBelowPlayer ? Colors.black : null,
@@ -916,7 +923,14 @@ class _WatchScreenState extends State<WatchScreen> {
                     ],
                   ),
                 ),
-                if (!hideBelowPlayer)
+                if (!hideBelowPlayer && isLiveTv)
+                  Expanded(
+                    child: _LiveTvWatchBody(
+                      video: video,
+                      controller: widget.controller,
+                    ),
+                  )
+                else if (!hideBelowPlayer)
                   Expanded(
                     child: CustomScrollView(
                       slivers: [
@@ -1359,7 +1373,12 @@ class _NativePlayerSurface extends StatelessWidget {
                         )
                       : const CircularProgressIndicator(color: Colors.white),
                 )
-              else if (showOverlay) ...[
+              else ...[
+                if (player!.value.isBuffering && !showOverlay)
+                  const Center(
+                    child: CircularProgressIndicator(color: Colors.white70),
+                  ),
+                if (showOverlay) ...[
                 Container(color: Colors.black26),
                 Positioned(
                   top: 4,
@@ -1439,28 +1458,51 @@ class _NativePlayerSurface extends StatelessWidget {
                       final current = Duration(
                         milliseconds: (total.inMilliseconds * progress).round(),
                       );
+                      final isLiveTv = video.id.startsWith('tv_');
                       return Row(
                         children: [
-                          Text(
-                            formatDuration(current),
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 12,
+                          if (isLiveTv) ...[
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 3,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.red.shade700,
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                              child: const Text(
+                                'LIVE',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
                             ),
-                          ),
-                          Expanded(
-                            child: Slider(
-                              value: progress.clamp(0.0, 1.0),
-                              onChanged: onSeek,
+                            const Spacer(),
+                          ] else ...[
+                            Text(
+                              formatDuration(current),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                              ),
                             ),
-                          ),
-                          Text(
-                            video.isLive ? 'LIVE' : formatDuration(total),
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 12,
+                            Expanded(
+                              child: Slider(
+                                value: progress.clamp(0.0, 1.0),
+                                onChanged: onSeek,
+                              ),
                             ),
-                          ),
+                            Text(
+                              video.isLive ? 'LIVE' : formatDuration(total),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
                           IconButton(
                             color: Colors.white,
                             onPressed: onToggleMute,
@@ -1486,11 +1528,190 @@ class _NativePlayerSurface extends StatelessWidget {
                     },
                   ),
                 ),
+                ],
               ],
             ],
           ),
         ),
       ),
+    );
+  }
+}
+
+class _LiveTvWatchBody extends StatelessWidget {
+  const _LiveTvWatchBody({
+    required this.video,
+    required this.controller,
+  });
+
+  final VideoItem video;
+  final ZenPlayController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final channels = controller.tvChannels;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerLow,
+            border: Border(
+              bottom: BorderSide(
+                color: scheme.outlineVariant.withValues(alpha: 0.4),
+              ),
+            ),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 48,
+                height: 48,
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: scheme.surface,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: scheme.outlineVariant.withValues(alpha: 0.4),
+                  ),
+                ),
+                child: video.thumbnailUrl != null
+                    ? Image.network(
+                        video.thumbnailUrl!,
+                        fit: BoxFit.contain,
+                        errorBuilder: (_, __, ___) => Icon(
+                          Icons.live_tv_rounded,
+                          color: scheme.primary,
+                        ),
+                      )
+                    : Icon(Icons.live_tv_rounded, color: scheme.primary),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      video.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.red.shade700,
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: const Text(
+                            'LIVE',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          video.category,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: scheme.onSurfaceVariant,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+          child: Text(
+            'Live Channels',
+            style: theme.textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        Expanded(
+          child: ListView.separated(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
+            itemCount: channels.length,
+            separatorBuilder: (_, __) => const SizedBox(height: 8),
+            itemBuilder: (_, index) {
+              final ch = channels[index];
+              final isCurrent = 'tv_${ch.id}' == video.id;
+              return Material(
+                color: isCurrent
+                    ? scheme.primaryContainer.withValues(alpha: 0.5)
+                    : scheme.surfaceContainerLow,
+                borderRadius: BorderRadius.circular(14),
+                child: ListTile(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                    side: BorderSide(
+                      color: isCurrent
+                          ? scheme.primary
+                          : scheme.outlineVariant.withValues(alpha: 0.35),
+                    ),
+                  ),
+                  leading: Container(
+                    width: 42,
+                    height: 42,
+                    padding: const EdgeInsets.all(4),
+                    decoration: BoxDecoration(
+                      color: scheme.surface,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: ch.logoUrl != null
+                        ? Image.network(
+                            ch.logoUrl!,
+                            fit: BoxFit.contain,
+                            errorBuilder: (_, __, ___) => Icon(
+                              Icons.live_tv_rounded,
+                              size: 22,
+                              color: scheme.primary,
+                            ),
+                          )
+                        : Icon(
+                            Icons.live_tv_rounded,
+                            size: 22,
+                            color: scheme.primary,
+                          ),
+                  ),
+                  title: Text(
+                    ch.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  subtitle: Text(ch.category),
+                  trailing: isCurrent
+                      ? Icon(Icons.graphic_eq_rounded, color: scheme.primary)
+                      : const Icon(Icons.play_arrow_rounded),
+                  onTap: isCurrent ? null : () => controller.playTvChannel(ch),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 }

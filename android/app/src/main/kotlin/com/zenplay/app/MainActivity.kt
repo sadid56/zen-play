@@ -15,6 +15,8 @@ class MainActivity : FlutterActivity() {
     private val channelName = "com.zenplay.app/pip"
     private val mediaChannelName = "com.zenplay.app/media"
     private var pipEnabled = false
+    private var wasInPip = false
+    private var pipExitedPendingStop = false
     private var channel: MethodChannel? = null
     private var mediaChannel: MethodChannel? = null
     private var askedNotificationPermission = false
@@ -27,7 +29,9 @@ class MainActivity : FlutterActivity() {
                     "setPipEnabled" -> {
                         pipEnabled = call.argument<Boolean>("enabled") ?: false
                         updatePipParams()
-                        updateBackgroundService(pipEnabled)
+                        if (!pipEnabled) {
+                            stopService(Intent(this@MainActivity, BackgroundAudioService::class.java))
+                        }
                         result.success(null)
                     }
                     "enterPip" -> {
@@ -91,11 +95,32 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        pipExitedPendingStop = false
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (pipExitedPendingStop && !isChangingConfigurations) {
+            pipExitedPendingStop = false
+            stopService(Intent(this, BackgroundAudioService::class.java))
+            channel?.invokeMethod("onPipClosed", null)
+        }
+    }
+
     override fun onPictureInPictureModeChanged(
         isInPictureInPictureMode: Boolean,
         newConfig: Configuration
     ) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        if (isInPictureInPictureMode) {
+            wasInPip = true
+            pipExitedPendingStop = false
+        } else if (wasInPip) {
+            wasInPip = false
+            pipExitedPendingStop = true
+        }
         channel?.invokeMethod("onPipChanged", isInPictureInPictureMode)
     }
 
@@ -113,19 +138,6 @@ class MainActivity : FlutterActivity() {
         val params = buildPipParams() ?: return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             setPictureInPictureParams(params)
-        }
-    }
-
-    private fun updateBackgroundService(enabled: Boolean) {
-        val intent = Intent(this, BackgroundAudioService::class.java)
-        if (enabled) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(intent)
-            } else {
-                startService(intent)
-            }
-        } else {
-            stopService(intent)
         }
     }
 
